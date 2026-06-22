@@ -6,7 +6,7 @@ import Observation
 final class Updater {
     static let shared = Updater()
 
-    let currentVersion = "0.3.3"
+    let currentVersion = "0.3.4"
     let repo = "dcolinmorgan/herdi"
 
     var latestVersion: String?
@@ -91,75 +91,44 @@ final class Updater {
 
         Task {
             do {
-                // For private repos, download via gh CLI
-                let tmpDMG = FileManager.default.temporaryDirectory.appendingPathComponent("Herdi-update.dmg")
-                try? FileManager.default.removeItem(at: tmpDMG)
-
-                // Try gh release download first
-                let ghPaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
-                let ghPath = ghPaths.first(where: { FileManager.default.fileExists(atPath: $0) })
-
-                let ghDl = Process()
-                ghDl.executableURL = URL(fileURLWithPath: ghPath ?? "/usr/bin/false")
-                ghDl.arguments = ["release", "download", "v\(latestVersion ?? "")", "--repo", repo, "--pattern", "*.dmg", "--dir", tmpDMG.deletingLastPathComponent().path, "--clobber"]
-                ghDl.standardError = FileHandle.nullDevice
-                try? ghDl.run()
-                ghDl.waitUntilExit()
-
-                // Find downloaded DMG
-                let dmgPath: URL
-                if ghDl.terminationStatus == 0,
-                   let found = try? FileManager.default.contentsOfDirectory(at: tmpDMG.deletingLastPathComponent(), includingPropertiesForKeys: nil)
-                    .first(where: { $0.pathExtension == "dmg" && $0.lastPathComponent.contains("Herdi") }) {
-                    dmgPath = found
-                } else {
-                    // Fallback: direct URL download
-                    let (fileURL, _) = try await URLSession.shared.download(from: url)
-                    try? FileManager.default.removeItem(at: tmpDMG)
-                    try FileManager.default.moveItem(at: fileURL, to: tmpDMG)
-                    dmgPath = tmpDMG
-                }
+                // Download DMG via public URL
+                let dmgPath = FileManager.default.temporaryDirectory.appendingPathComponent("Herdi-update.dmg")
+                try? FileManager.default.removeItem(at: dmgPath)
+                let (fileURL, _) = try await URLSession.shared.download(from: url)
+                try FileManager.default.moveItem(at: fileURL, to: dmgPath)
 
                 DispatchQueue.main.async { self.status = "Installing…" }
 
-                // Mount
-                let mount = Process()
-                mount.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-                mount.arguments = ["attach", dmgPath.path, "-nobrowse", "-quiet"]
-                try mount.run()
-                mount.waitUntilExit()
-
-                let mountPoint = "/Volumes/Herdi"
-                let appSource = "\(mountPoint)/Herdi.app"
                 let appDest = Bundle.main.bundlePath
 
-                guard FileManager.default.fileExists(atPath: appSource) else {
-                    DispatchQueue.main.async { self.status = "Install failed"; self.isUpdating = false }
-                    return
-                }
+                // Write a script that runs AFTER this app quits
+                let script = """
+                #!/bin/bash
+                sleep 1
+                hdiutil attach "\(dmgPath.path)" -nobrowse -quiet
+                if [ -d "/Volumes/Herdi/Herdi.app" ]; then
+                    rm -rf "\(appDest)"
+                    cp -R "/Volumes/Herdi/Herdi.app" "\(appDest)"
+                    hdiutil detach "/Volumes/Herdi" -quiet
+                    rm -f "\(dmgPath.path)"
+                    open "\(appDest)"
+                else
+                    hdiutil detach "/Volumes/Herdi" -quiet 2>/dev/null
+                fi
+                rm -f /tmp/herdi-update.sh
+                """
 
-                // Replace
-                let backup = appDest + ".bak"
-                try? FileManager.default.removeItem(atPath: backup)
-                try FileManager.default.moveItem(atPath: appDest, toPath: backup)
-                try FileManager.default.copyItem(atPath: appSource, toPath: appDest)
+                let scriptPath = "/tmp/herdi-update.sh"
+                try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+                chmod(scriptPath, 0o755)
 
-                // Unmount + cleanup
-                let unmount = Process()
-                unmount.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-                unmount.arguments = ["detach", mountPoint, "-quiet"]
-                try? unmount.run()
-                try? FileManager.default.removeItem(atPath: backup)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                process.arguments = [scriptPath]
+                try process.run()
 
-                DispatchQueue.main.async { self.status = "Relaunching…" }
-
-                // Relaunch
-                let relaunch = Process()
-                relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                relaunch.arguments = ["-n", appDest]
-                try relaunch.run()
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                // Quit so the script can replace us
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     NSApplication.shared.terminate(nil)
                 }
             } catch {
@@ -170,4 +139,8 @@ final class Updater {
             }
         }
     }
+}
+
+private func chmod(_ path: String, _ mode: mode_t) {
+    Darwin.chmod(path, mode)
 }
