@@ -7,8 +7,7 @@ Get mobile notifications + approval for your herdr agents in 60 seconds.
 ```bash
 git clone https://github.com/dcolinmorgan/herdr-remote
 cd herdr-remote/relay
-python3 -m venv .venv && .venv/bin/pip install websockets
-.venv/bin/python3 herdr_relay.py
+uv run herdr_relay.py
 ```
 
 ## 2. Expose it (pick one)
@@ -30,19 +29,21 @@ herdr server reload-config
 
 ## 4. Monitor
 
+**Web app** (phone):
+Open [herdr-remote.pages.dev](https://herdr-remote.pages.dev), tap ⚙, paste your tunnel URL.
+
 **Menu bar app** (macOS):
-Download from [Releases](https://github.com/dcolinmorgan/herdr-remote/releases), open, it connects automatically.
+Download from [Releases](https://github.com/dcolinmorgan/herdr-remote/releases).
 
 **Telegram bot**:
 ```bash
 export HERDR_TG_TOKEN="your-token" HERDR_TG_CHAT_ID="your-id"
-python3 relay/herdr_telegram.py
+uv run herdr_telegram.py
 ```
 
 **Terminal TUI**:
 ```bash
-pip install textual websockets
-python3 relay/herdr_tui.py
+uv run herdr_tui.py
 ```
 
 ## 5. Test

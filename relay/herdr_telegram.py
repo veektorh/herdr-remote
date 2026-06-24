@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Herdi Telegram bot - approval notifications + inline response buttons."""
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["python-telegram-bot>=21.0", "websockets>=14.0"]
+# ///
+"""Herdr Remote Telegram bot - approval notifications + inline response buttons."""
 import asyncio, json, os, logging
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup

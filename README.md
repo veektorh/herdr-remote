@@ -56,8 +56,7 @@ python3 relay/herdr_tui.py
 
 ```bash
 cd relay
-python3 -m venv .venv && .venv/bin/pip install websockets zeroconf
-.venv/bin/python3 herdr_relay.py
+uv run herdr_relay.py
 ```
 
 ### Remote Herdr Instances
