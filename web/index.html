@@ -145,9 +145,11 @@ const THEMES = ['dark','light','nord','solarized','rose'];
 let ws = null, agents = [], activePane = null, refreshInterval = null;
 
 // Settings
-const savedUrl = localStorage.getItem('herdr_relay_url') || '';
+const DEFAULT_RELAY = 'wss://your-relay.example.com';
+const DEFAULT_TOKEN = 'YOUR_TOKEN_HERE';
+const savedUrl = localStorage.getItem('herdr_relay_url') || DEFAULT_RELAY;
 const savedTheme = localStorage.getItem('herdr_theme') || 'dark';
-const savedToken = localStorage.getItem('herdr_relay_token') || '';
+const savedToken = localStorage.getItem('herdr_relay_token') || DEFAULT_TOKEN;
 document.getElementById('relayUrl').value = savedUrl;
 document.getElementById('relayToken').value = savedToken;
 applyTheme(savedTheme);
@@ -293,7 +295,7 @@ function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'se
 function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
 document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
 
-if (savedUrl) setTimeout(connect, 100); else showSetup();
+if (savedUrl) setTimeout(connect, 100);
 </script>
 </body>
 </html>
