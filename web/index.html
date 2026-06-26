@@ -81,11 +81,25 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 /* Agent list */
 .agents { padding: 12px; }
 .section-header { font-size: 0.65rem; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; display: flex; align-items: center; gap: 5px; }
-.agent { background: var(--surface); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.agent { background: var(--surface); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; cursor: pointer; position: relative; }
 .agent:active { opacity: 0.7; }
-.agent .info { flex: 1; }
-.agent .project { font-size: 0.85rem; font-weight: 500; }
+.agent .agent-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; background: var(--border); color: var(--text); flex-shrink: 0; font-weight: 600; }
+.agent .agent-icon.kiro { background: #1a73e8; color: #fff; }
+.agent .agent-icon.codex { background: #10a37f; color: #fff; }
+.agent .agent-icon.claude { background: #d97706; color: #fff; }
+.agent .agent-icon.grok { background: #000; color: #fff; }
+.agent .agent-icon.pi { background: #7c3aed; color: #fff; }
+.agent .info { flex: 1; min-width: 0; }
+.agent .project { font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent .meta { font-size: 0.65rem; color: var(--muted); }
+.agent .menu-btn { background: none; border: none; color: var(--muted); font-size: 1.2rem; padding: 4px 8px; cursor: pointer; flex-shrink: 0; }
+
+/* Context menu */
+.ctx-menu { display: none; position: fixed; z-index: 200; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 0; min-width: 160px; box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+.ctx-menu.show { display: block; }
+.ctx-menu button { display: block; width: 100%; text-align: left; padding: 10px 16px; border: none; background: none; color: var(--text); font-size: 0.8rem; cursor: pointer; }
+.ctx-menu button:active { background: var(--border); }
+.ctx-menu .danger { color: var(--red); }
 
 /* Terminal view */
 .terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: 49px; background: var(--bg); z-index: 50; }
@@ -177,6 +191,13 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     </div>
     <button onclick="document.getElementById('termInput').blur()">⌨↓</button>
   </div>
+</div>
+
+<div class="ctx-menu" id="ctxMenu">
+  <button onclick="ctxAction('terminal')">📺 Open Terminal</button>
+  <button onclick="ctxAction('approve')" id="ctxApprove" style="display:none">✅ Approve</button>
+  <button onclick="ctxAction('read')">📋 Read Output</button>
+  <button class="danger" onclick="ctxAction('interrupt')">⚠ Send ^C</button>
 </div>
 
 <script>
@@ -297,11 +318,48 @@ function section(title, color, list) {
   return `<div class="section-header"><span class="dot" style="background:${color}"></span>${title}</div>` +
     list.map(a => {
       const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
+      const icon = agentIcon(a.agent);
       return `<div class="agent" onclick="openTerminal('${a.pane_id}')">
-        <span class="dot" style="background:${color}"></span>
+        <div class="agent-icon ${icon.cls}">${icon.label}</div>
         <div class="info"><div class="project">${a.project||a.agent}${host}</div><div class="meta">${a.agent} · ${a.status}</div></div>
+        <button class="menu-btn" onclick="event.stopPropagation();showCtx(event,'${a.pane_id}')">⋯</button>
       </div>`;
     }).join('');
+}
+
+function agentIcon(name) {
+  const n = (name||'').toLowerCase();
+  if (n.includes('kiro')) return {cls:'kiro', label:'K'};
+  if (n.includes('codex')) return {cls:'codex', label:'Cx'};
+  if (n.includes('claude')) return {cls:'claude', label:'C'};
+  if (n.includes('grok')) return {cls:'grok', label:'G'};
+  if (n.includes('pi')) return {cls:'pi', label:'π'};
+  if (n.includes('copilot')) return {cls:'kiro', label:'Co'};
+  return {cls:'', label: (name||'?')[0].toUpperCase()};
+}
+
+let ctxTarget = null;
+function showCtx(e, paneId) {
+  ctxTarget = paneId;
+  const menu = document.getElementById('ctxMenu');
+  const a = agents.find(x => x.pane_id === paneId);
+  document.getElementById('ctxApprove').style.display = a&&a.status==='blocked' ? '' : 'none';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 180) + 'px';
+  menu.style.left = Math.min(e.clientX - 120, window.innerWidth - 170) + 'px';
+  menu.classList.add('show');
+  setTimeout(() => document.addEventListener('click', hideCtx, {once:true}), 10);
+}
+function hideCtx() { document.getElementById('ctxMenu').classList.remove('show'); }
+function ctxAction(action) {
+  hideCtx();
+  if (!ctxTarget) return;
+  if (action === 'terminal') openTerminal(ctxTarget);
+  else if (action === 'approve') {
+    const a = agents.find(x => x.pane_id === ctxTarget);
+    if (a) respond('yes, single permission');
+  }
+  else if (action === 'read') { activePane = ctxTarget; refreshPane(); openTerminal(ctxTarget); }
+  else if (action === 'interrupt') { ws.send(JSON.stringify({type:'send_keys',pane_id:ctxTarget,keys:['Ctrl+c']})); }
 }
 
 function openTerminal(paneId) {
