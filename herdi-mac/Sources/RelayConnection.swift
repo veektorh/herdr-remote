@@ -233,6 +233,18 @@ final class RelayConnection {
         }
     }
 
+    func focusPane(_ paneId: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            _ = runHerdr("pane", "focus", paneId)
+        }
+    }
+
+    func interruptPane(_ paneId: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            _ = runHerdr("pane", "send-keys", paneId, "Ctrl+c")
+        }
+    }
+
     private func listen() {
         task?.receive { [weak self] result in
             guard let self else { return }
