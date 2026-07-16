@@ -62,7 +62,16 @@ export default {
         } else if (msg.type === 'respond') {
           const a = agents.find(x => x.pane_id === msg.pane_id);
           if (a) a.status = 'working';
+          server.send(JSON.stringify({
+            type: 'command_result', action: 'respond', ok: Boolean(a),
+            pane_id: msg.pane_id, request_id: msg.request_id
+          }));
           server.send(JSON.stringify({ type: 'agents', agents }));
+        } else if (msg.type === 'submit_text' || msg.type === 'send_text' || msg.type === 'send_keys') {
+          server.send(JSON.stringify({
+            type: 'command_result', action: msg.type, ok: agents.some(a => a.pane_id === msg.pane_id),
+            pane_id: msg.pane_id, request_id: msg.request_id
+          }));
         }
       } catch {}
     });

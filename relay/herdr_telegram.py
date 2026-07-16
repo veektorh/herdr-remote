@@ -4,7 +4,7 @@
 # dependencies = ["python-telegram-bot>=21.0", "websockets>=14.0"]
 # ///
 """herdr-remote Telegram bot — monitor and approve agents from Telegram."""
-import asyncio, json, os, logging
+import asyncio, json, os, logging, secrets
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, ContextTypes, filters
@@ -15,6 +15,11 @@ log = logging.getLogger("herdr-tg")
 TOKEN = os.environ.get("HERDR_TG_TOKEN", "")
 CHAT_ID = os.environ.get("HERDR_TG_CHAT_ID", "")
 RELAY_WS = os.environ.get("HERDR_RELAY", "ws://127.0.0.1:8375")
+RELAY_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")
+
+
+def relay_headers():
+    return {"Authorization": f"Bearer {RELAY_TOKEN}"} if RELAY_TOKEN else None
 
 if not TOKEN:
     print("Set HERDR_TG_TOKEN (from @BotFather)")
@@ -35,17 +40,36 @@ async def send_to_relay(pane_id: str, text: str):
     """Send a response to the relay via WebSocket."""
     import websockets
     try:
-        async with websockets.connect(RELAY_WS) as ws:
+        async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
             await ws.send(json.dumps({"type": "respond", "pane_id": pane_id, "text": text}))
     except Exception as e:
         log.warning(f"Failed to send to relay: {e}")
+
+
+async def submit_text_to_relay(pane_id: str, text: str) -> bool:
+    """Atomically submit terminal text and wait for the correlated result."""
+    import websockets
+    request_id = f"tg_{secrets.token_hex(8)}"
+    try:
+        async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
+            await ws.send(json.dumps({
+                "type": "submit_text", "pane_id": pane_id, "text": text,
+                "request_id": request_id,
+            }))
+            for _ in range(5):
+                message = json.loads(await asyncio.wait_for(ws.recv(), timeout=3))
+                if message.get("request_id") == request_id:
+                    return bool(message.get("ok"))
+    except Exception as exc:
+        log.warning("Failed to submit text to relay: %s", type(exc).__name__)
+    return False
 
 
 async def read_pane(pane_id: str, lines: int = 15) -> str:
     """Read pane content from relay."""
     import websockets
     try:
-        async with websockets.connect(RELAY_WS) as ws:
+        async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
             await ws.send(json.dumps({"type": "read_pane", "pane_id": pane_id, "lines": lines}))
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
             msg = json.loads(raw)
@@ -189,7 +213,7 @@ async def cmd_interrupt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     import websockets
     try:
-        async with websockets.connect(RELAY_WS) as ws:
+        async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
             await ws.send(json.dumps({"type": "send_keys", "pane_id": match["pane_id"], "keys": ["Ctrl+c"]}))
         await update.message.reply_text(f"Sent Ctrl+C to {match['project']}")
     except Exception as e:
@@ -222,12 +246,11 @@ async def cmd_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pending[msg.message_id] = match["pane_id"]
         return
 
-    import websockets
     try:
-        async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "send_text", "pane_id": match["pane_id"], "text": text}))
-            await ws.send(json.dumps({"type": "send_keys", "pane_id": match["pane_id"], "keys": ["Enter"]}))
-        await update.message.reply_text(f"Sent to {match['project']}: {text}")
+        if await submit_text_to_relay(match["pane_id"], text):
+            await update.message.reply_text(f"Sent to {match['project']}: {text}")
+        else:
+            await update.message.reply_text("Relay did not confirm delivery.")
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
 
@@ -332,7 +355,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "interrupt":
         import websockets
         try:
-            async with websockets.connect(RELAY_WS) as ws:
+            async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
                 await ws.send(json.dumps({"type": "send_keys", "pane_id": data["pane_id"], "keys": ["Ctrl+c"]}))
             await query.message.reply_text("Sent Ctrl+C")
         except Exception as e:
@@ -387,12 +410,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not pane_id:
         return  # Not a reply and no send target — ignore
 
-    import websockets
     try:
-        async with websockets.connect(RELAY_WS) as ws:
-            await ws.send(json.dumps({"type": "send_text", "pane_id": pane_id, "text": update.message.text}))
-            await ws.send(json.dumps({"type": "send_keys", "pane_id": pane_id, "keys": ["Enter"]}))
-        await update.message.reply_text("Sent")
+        if await submit_text_to_relay(pane_id, update.message.text):
+            await update.message.reply_text("Sent")
+        else:
+            await update.message.reply_text("Relay did not confirm delivery.")
     except Exception as e:
         await update.message.reply_text(f"Failed: {e}")
 
@@ -447,7 +469,7 @@ async def relay_listener(app: Application):
 
     while True:
         try:
-            async with websockets.connect(RELAY_WS) as ws:
+            async with websockets.connect(RELAY_WS, additional_headers=relay_headers()) as ws:
                 relay_connected = True
                 log.info(f"Connected to relay at {RELAY_WS}")
                 async for raw in ws:

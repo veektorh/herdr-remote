@@ -12,7 +12,7 @@ herdr-remote is a multi-client system for monitoring and approving [herdr](https
 Clients (web/mac/ios/telegram/tui)
         │ WebSocket
         ▼
-   relay (:8375)  ←── Cloudflare tunnel (public wss://)
+   relay (:8375)  ←── Tailscale Serve (preferred) or protected Cloudflare Tunnel
         │
         ▼
    herdr CLI (local or SSH to HERDR_REMOTES)
@@ -64,22 +64,37 @@ cd herdi-ios && xcodegen generate
 | Variable | Purpose |
 |----------|---------|
 | `HERDR_RELAY_PORT` | Relay WebSocket port (default: 8375) |
-| `HERDR_RELAY_TOKEN` | Optional shared secret for auth |
+| `HERDR_RELAY_BIND` | Listener address (default: `127.0.0.1`) |
+| `HERDR_RELAY_TOKEN` | Admin secret; mandatory for non-loopback binds |
 | `HERDR_REMOTES` | Comma-separated SSH targets to poll |
-| `HERDR_BIN` | Path to herdr binary (default: `/opt/homebrew/bin/herdr`) |
+| `HERDR_BIN` | Path to herdr binary (installer discovers it; runtime default: `herdr`) |
 | `HERDR_RELAY` | Relay URL used by clients (default: `ws://127.0.0.1:8375`) |
+| `HERDR_ALLOWED_ORIGINS` | Comma-separated external browser origins |
+| `HERDR_PUBLIC_URL` | Canonical HTTPS URL placed in pairing QR codes |
+| `HERDR_MAX_CLIENTS` | Maximum simultaneous WebSocket clients (default: 16) |
+| `HERDR_MAX_PUSH_SUBSCRIPTIONS` | Maximum stored Push subscriptions (default: 64) |
 
 ## Web App
 
-The web app is a single self-contained HTML file (`web/index.html`) with inline CSS and JS — no build step. It's deployed to Cloudflare Pages. It includes 11 color themes, a mobile terminal keyboard, PWA support, and agent-icon detection.
+The web app is a single self-contained HTML file (`web/index.html`) with inline CSS and JS — no build step. It includes an installable manifest, offline application shell, Android/Windows layout, Web Push with delivery testing, short-lived QR pairing, paired-device revocation, and a mobile terminal keyboard. Browser credentials use a WebSocket subprotocol rather than URL query parameters.
+
+Pairing codes are eight-character, single-use, and valid for two minutes. Paired
+device tokens are scoped and only their hashes are persisted in
+`~/.config/herdr-remote/devices.json` with mode `0600`. VAPID keys are generated
+on first relay start and persisted in the same protected config directory.
 
 ## WebSocket Protocol
 
 Messages are JSON with a `type` field:
 
-**Server → Client:** `agents` (state list), `blocked` (approval prompt), `pane_content` (terminal read)
+**Server → Client:** `agents` (state list), `blocked` (approval prompt), `pane_content` (terminal read), `command_result` (correlated write acknowledgement)
 
-**Client → Server:** `respond` (send text to agent), `read_pane` (request terminal content), `send_keys` (send key sequences), `send_text` (raw text without newline)
+**Client → Server:** `respond` (allowlisted approval), `read_pane` (request terminal content), `send_keys` (allowlisted key sequences), `send_text` (raw text without newline), `submit_text` (text plus Enter with correlated acknowledgement)
+
+Write messages may include a bounded `request_id`; new clients use it to match
+`command_result` responses. `send_text` remains supported for Herdr 0.7-era
+clients. Never log message text, credentials, WebSocket subprotocol values, or
+Push endpoint secrets.
 
 ## Deployment
 

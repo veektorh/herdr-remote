@@ -1,9 +1,20 @@
 #!/bin/bash
 set -e
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_FILE="$HOME/.config/herdr-remote/config.env"
+
+# Load the generated config before deriving runtime values.
+if [ -f "$CONFIG_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+    set +a
+fi
+
 WS_PORT="${HERDR_RELAY_PORT:-8375}"
+WS_BIND="${HERDR_RELAY_BIND:-127.0.0.1}"
 
 RELAY_PID=""
 TUNNEL_PID=""
@@ -22,12 +33,19 @@ trap cleanup INT TERM EXIT
 echo "herdr-remote relay"
 echo ""
 
-# Load config if available
-[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
-
 # 1. Start relay
-echo "Starting relay on :$WS_PORT..."
-uv run "$SCRIPT_DIR/herdr_relay.py" &
+echo "Starting relay on $WS_BIND:$WS_PORT..."
+if [ -n "${HERDR_UV_PATH:-}" ]; then
+    UV_PATH="$HERDR_UV_PATH"
+else
+    UV_PATH="$(command -v uv 2>/dev/null || true)"
+fi
+if [ -z "$UV_PATH" ] || ! "$UV_PATH" --version >/dev/null 2>&1; then
+    echo "Error: no executable WSL/Linux uv binary found."
+    echo "Install uv inside WSL: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+fi
+"$UV_PATH" run "$SCRIPT_DIR/herdr_relay.py" &
 RELAY_PID=$!
 sleep 2
 
@@ -59,7 +77,7 @@ if command -v cloudflared >/dev/null 2>&1; then
 
     if [ "$TUNNEL_MODE" = "temp" ]; then
         echo "Starting temp tunnel..."
-        cloudflared tunnel --url "http://localhost:$WS_PORT" 2>&1 &
+        cloudflared tunnel --url "http://127.0.0.1:$WS_PORT" 2>&1 &
         TUNNEL_PID=$!
         sleep 4
 

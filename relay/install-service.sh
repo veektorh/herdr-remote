@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+umask 077
 
 LABEL_RELAY="com.herdr-remote.relay"
 LABEL_TUNNEL="com.herdr-remote.tunnel"
@@ -18,10 +19,59 @@ detect_os() {
     esac
 }
 
+cloudflared_download_url() {
+    local os="$1"
+    local arch="$2"
+    local asset_arch=""
+
+    if [ "$os" != "linux" ]; then
+        echo "Error: Automatic cloudflared binary installation requires Linux or Homebrew on macOS." >&2
+        return 1
+    fi
+
+    case "$arch" in
+        x86_64|amd64) asset_arch="amd64" ;;
+        aarch64|arm64) asset_arch="arm64" ;;
+        armv7l|armv6l) asset_arch="arm" ;;
+        i386|i686)     asset_arch="386" ;;
+        *)
+            echo "Error: Unsupported cloudflared architecture: $arch" >&2
+            return 1
+            ;;
+    esac
+
+    echo "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$asset_arch"
+}
+
+route_tunnel_dns() {
+    local tunnel_name="$1"
+    local hostname="$2"
+
+    echo "  Routing DNS: $hostname -> $tunnel_name"
+    if "$CLOUDFLARED_PATH" tunnel route dns "$tunnel_name" "$hostname"; then
+        return
+    fi
+
+    echo "  A DNS record for $hostname already exists."
+    read -p "  Replace it with this tunnel route? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "  Error: DNS was not routed to tunnel '$tunnel_name'."
+        return 1
+    fi
+
+    "$CLOUDFLARED_PATH" tunnel route dns --overwrite-dns "$tunnel_name" "$hostname"
+}
+
 OS="$(detect_os)"
 if [ "$OS" = "unsupported" ]; then
     echo "Error: Unsupported OS ($(uname -s)). Only macOS and Linux are supported."
     exit 1
+fi
+
+if [ "${1:-}" = "--print-cloudflared-download-url" ]; then
+    cloudflared_download_url "$OS" "${2:-$(uname -m)}"
+    exit
 fi
 
 # --- Log directory (matches relay's _get_log_dir) ---
@@ -43,19 +93,31 @@ find_binary() {
 
     # 1. Already in PATH
     found="$(command -v "$name" 2>/dev/null || true)"
-    [ -n "$found" ] && echo "$found" && return
+    if [ -n "$found" ] && [ -x "$found" ] && "$found" --version >/dev/null 2>&1; then
+        echo "$found"
+        return
+    fi
 
     # 2. Homebrew (macOS Apple Silicon + Intel)
     for prefix in /opt/homebrew/bin /usr/local/bin; do
-        [ -x "$prefix/$name" ] && echo "$prefix/$name" && return
+        if [ -x "$prefix/$name" ] && "$prefix/$name" --version >/dev/null 2>&1; then
+            echo "$prefix/$name"
+            return
+        fi
     done
 
     # 3. Cargo
-    [ -x "$HOME/.cargo/bin/$name" ] && echo "$HOME/.cargo/bin/$name" && return
+    if [ -x "$HOME/.cargo/bin/$name" ] && "$HOME/.cargo/bin/$name" --version >/dev/null 2>&1; then
+        echo "$HOME/.cargo/bin/$name"
+        return
+    fi
 
     # 4. Common locations
     for dir in "$HOME/.local/bin" "$HOME/bin" /usr/bin; do
-        [ -x "$dir/$name" ] && echo "$dir/$name" && return
+        if [ -x "$dir/$name" ] && "$dir/$name" --version >/dev/null 2>&1; then
+            echo "$dir/$name"
+            return
+        fi
     done
 
     echo ""
@@ -65,6 +127,7 @@ UV_PATH="$(find_binary uv)"
 HERDR_PATH="$(find_binary herdr)"
 HERDR_PUSH_PATH="$(find_binary herdr-push)"
 CLOUDFLARED_PATH="$(find_binary cloudflared)"
+TAILSCALE_PATH="$(find_binary tailscale)"
 
 echo "herdr-remote relay installer"
 echo "============================"
@@ -74,6 +137,7 @@ echo "  uv:          ${UV_PATH:-NOT FOUND}"
 echo "  herdr:       ${HERDR_PATH:-NOT FOUND}"
 echo "  herdr-push:  ${HERDR_PUSH_PATH:-NOT FOUND}"
 echo "  cloudflared: ${CLOUDFLARED_PATH:-NOT FOUND}"
+echo "  tailscale:   ${TAILSCALE_PATH:-NOT FOUND}"
 echo "  relay:       $SCRIPT_DIR/herdr_relay.py"
 echo "  config:      $CONFIG_FILE"
 echo "  logs:        $LOG_DIR/"
@@ -108,21 +172,76 @@ if [ "$1" = "--uninstall" ]; then
         rm -f "$HOME/Library/LaunchAgents/$LABEL_RELAY.plist"
         rm -f "$HOME/Library/LaunchAgents/$LABEL_TUNNEL.plist"
     else
+        "$SCRIPT_DIR/service.sh" stop 2>/dev/null || true
+        if [ -r "$CONFIG_DIR/tunnel.pid" ]; then
+            kill "$(cat "$CONFIG_DIR/tunnel.pid")" 2>/dev/null || true
+            rm -f "$CONFIG_DIR/tunnel.pid"
+        fi
         systemctl --user stop herdr-relay.service 2>/dev/null || true
         systemctl --user stop herdr-tunnel.service 2>/dev/null || true
         systemctl --user disable herdr-relay.service 2>/dev/null || true
         systemctl --user disable herdr-tunnel.service 2>/dev/null || true
         rm -f "$HOME/.config/systemd/user/herdr-relay.service"
         rm -f "$HOME/.config/systemd/user/herdr-tunnel.service"
-        systemctl --user daemon-reload
+        systemctl --user daemon-reload 2>/dev/null || true
     fi
     echo "Done. Config preserved at $CONFIG_FILE"
     exit 0
 fi
 
-# --- Cloudflared check and install ---
+# --- Secure remote access ---
 
 TUNNEL_MODE="none"
+REMOTE_ACCESS="cloudflare"
+
+if [ -n "$TAILSCALE_PATH" ]; then
+    echo "Remote access"
+    echo "-------------"
+    echo "  1) tailscale  — private tailnet HTTPS (recommended)"
+    echo "  2) cloudflare — public hostname; requires Cloudflare Access"
+    echo "  3) none       — local access only"
+    echo ""
+    read -p "  Remote access [1/2/3, default 1]: " -n 1 -r REMOTE_CHOICE
+    echo
+    case "$REMOTE_CHOICE" in
+        2) REMOTE_ACCESS="cloudflare" ;;
+        3) REMOTE_ACCESS="none" ;;
+        *) REMOTE_ACCESS="tailscale" ;;
+    esac
+fi
+
+if [ "$REMOTE_ACCESS" = "tailscale" ]; then
+    echo ""
+    echo "Tailscale Serve"
+    echo "---------------"
+    if ! "$TAILSCALE_PATH" status >/dev/null 2>&1; then
+        echo "  Error: Tailscale is installed but not connected. Run: sudo tailscale up" >&2
+        exit 1
+    fi
+    TAILSCALE_STATUS="$("$TAILSCALE_PATH" serve status 2>/dev/null || true)"
+    if echo "$TAILSCALE_STATUS" | grep -q "127.0.0.1:$WS_PORT"; then
+        echo "  Reusing existing Tailscale Serve route."
+    elif ! "$TAILSCALE_PATH" serve --bg --yes "http://127.0.0.1:$WS_PORT"; then
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "  Error: Tailscale Serve requires elevated permission and sudo is unavailable." >&2
+            exit 1
+        fi
+        echo "  Retrying Tailscale Serve with sudo..."
+        sudo "$TAILSCALE_PATH" serve --bg --yes "http://127.0.0.1:$WS_PORT"
+    fi
+    TAILSCALE_URL=$("$TAILSCALE_PATH" serve status 2>/dev/null | awk '/^https:\/\// { print $1; exit }')
+    if [ -z "$TAILSCALE_URL" ]; then
+        echo "  Error: Tailscale Serve did not report an HTTPS URL." >&2
+        exit 1
+    fi
+    TUNNEL_MODE="tailscale"
+    HERDR_PUBLIC_URL="$TAILSCALE_URL"
+    echo "  Tailnet-only URL: $TAILSCALE_URL"
+elif [ "$REMOTE_ACCESS" = "none" ]; then
+    echo "  Remote access disabled; relay remains on loopback."
+fi
+
+if [ "$REMOTE_ACCESS" = "cloudflare" ]; then
 
 if [ -z "$CLOUDFLARED_PATH" ]; then
     echo "Cloudflare tunnel"
@@ -136,14 +255,16 @@ if [ -z "$CLOUDFLARED_PATH" ]; then
             echo "  Running: brew install cloudflared"
             brew install cloudflared
         else
-            echo "  Running: curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m) -o /tmp/cloudflared"
-            curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)" -o /tmp/cloudflared
-            chmod +x /tmp/cloudflared
+            CLOUDFLARED_URL="$(cloudflared_download_url "$OS" "$(uname -m)")"
+            CLOUDFLARED_TEMP="$(mktemp)"
+            echo "  Running: curl -fsSL $CLOUDFLARED_URL"
+            curl -fsSL "$CLOUDFLARED_URL" -o "$CLOUDFLARED_TEMP"
+            chmod 755 "$CLOUDFLARED_TEMP"
             if [ -w /usr/local/bin ]; then
-                mv /tmp/cloudflared /usr/local/bin/cloudflared
+                mv "$CLOUDFLARED_TEMP" /usr/local/bin/cloudflared
             else
                 mkdir -p "$HOME/.local/bin"
-                mv /tmp/cloudflared "$HOME/.local/bin/cloudflared"
+                mv "$CLOUDFLARED_TEMP" "$HOME/.local/bin/cloudflared"
             fi
         fi
         CLOUDFLARED_PATH="$(find_binary cloudflared)"
@@ -382,6 +503,16 @@ print(tunnels[idx]["name"] if 0 <= idx < len(tunnels) else "")
                             fi
                         fi
 
+                        if [ "$TUNNEL_NAME" != "new" ]; then
+                            echo ""
+                            echo "  Warning: Reusing a tunnel can mix Herdr with existing routes and connectors."
+                            echo "  A dedicated tunnel is strongly recommended."
+                            read -p "  Type 'reuse $TUNNEL_NAME' to reuse it; press Enter for a new tunnel: " REUSE_CONFIRM
+                            if [ "$REUSE_CONFIRM" != "reuse $TUNNEL_NAME" ]; then
+                                TUNNEL_NAME="new"
+                            fi
+                        fi
+
                         # Create tunnel if requested
                         if [ "$TUNNEL_NAME" = "new" ]; then
                             read -p "  New tunnel name [herdr-relay]: " NEW_NAME
@@ -414,11 +545,7 @@ print(tunnels[idx]["name"] if 0 <= idx < len(tunnels) else "")
                                 TUNNEL_MODE="temp"
                             fi
                         else
-                            # Route DNS if needed
-                            echo "  Routing DNS: $TUNNEL_HOSTNAME -> $TUNNEL_NAME"
-                            "$CLOUDFLARED_PATH" tunnel route dns "$TUNNEL_NAME" "$TUNNEL_HOSTNAME" 2>/dev/null || {
-                                echo "  Note: DNS route may already exist. Continuing..."
-                            }
+                            route_tunnel_dns "$TUNNEL_NAME" "$TUNNEL_HOSTNAME"
                         fi
                     fi
                 else
@@ -446,10 +573,7 @@ print(tunnels[idx]["name"] if 0 <= idx < len(tunnels) else "")
                             echo "  Error: Hostname required."
                             TUNNEL_MODE="temp"
                         else
-                            echo "  Routing DNS: $TUNNEL_HOSTNAME -> $TUNNEL_NAME"
-                            "$CLOUDFLARED_PATH" tunnel route dns "$TUNNEL_NAME" "$TUNNEL_HOSTNAME" 2>/dev/null || {
-                                echo "  Note: DNS route may already exist. Continuing..."
-                            }
+                            route_tunnel_dns "$TUNNEL_NAME" "$TUNNEL_HOSTNAME"
                         fi
                     fi
                 fi
@@ -464,6 +588,8 @@ print(tunnels[idx]["name"] if 0 <= idx < len(tunnels) else "")
     esac
 fi
 
+fi
+
 # --- Save config ---
 
 # Normalize mode for config (named-external is still "named" at runtime)
@@ -471,18 +597,23 @@ CONFIG_TUNNEL_MODE="$TUNNEL_MODE"
 [ "$CONFIG_TUNNEL_MODE" = "named-external" ] && CONFIG_TUNNEL_MODE="named"
 
 mkdir -p "$CONFIG_DIR"
-cat > "$CONFIG_FILE" <<EOF
-# herdr-remote configuration (generated by install-service.sh)
-HERDR_RELAY_PORT=$WS_PORT
-HERDR_BIN=${HERDR_PATH:-herdr}
-HERDR_LOG_DIR=$LOG_DIR
-HERDR_TUNNEL_MODE=$CONFIG_TUNNEL_MODE
-HERDR_TUNNEL_NAME=${TUNNEL_NAME:-}
-HERDR_TUNNEL_HOSTNAME=${TUNNEL_HOSTNAME:-}
-HERDR_RELAY_DIR=$SCRIPT_DIR
-HERDR_UV_PATH=$UV_PATH
-HERDR_CLOUDFLARED_PATH=${CLOUDFLARED_PATH:-}
-EOF
+HERDR_CONFIG_FILE="$CONFIG_FILE" \
+HERDR_RELAY_BIND="${HERDR_RELAY_BIND:-127.0.0.1}" \
+HERDR_RELAY_PORT="$WS_PORT" \
+HERDR_RELAY_TOKEN="${HERDR_RELAY_TOKEN:-}" \
+HERDR_ALLOWED_ORIGINS="${HERDR_ALLOWED_ORIGINS:-}" \
+HERDR_PUBLIC_URL="${HERDR_PUBLIC_URL:-}" \
+HERDR_CONFIG_DIR="$CONFIG_DIR" \
+HERDR_BIN="${HERDR_PATH:-herdr}" \
+HERDR_LOG_DIR="$LOG_DIR" \
+HERDR_TUNNEL_MODE="$CONFIG_TUNNEL_MODE" \
+HERDR_TUNNEL_NAME="${TUNNEL_NAME:-}" \
+HERDR_TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}" \
+HERDR_RELAY_DIR="$SCRIPT_DIR" \
+HERDR_UV_PATH="$UV_PATH" \
+HERDR_CLOUDFLARED_PATH="${CLOUDFLARED_PATH:-}" \
+    "$SCRIPT_DIR/write-config.sh"
+RELAY_TOKEN="$(sed -n 's/^HERDR_RELAY_TOKEN=//p' "$CONFIG_FILE")"
 
 echo ""
 echo "Config saved to $CONFIG_FILE"
@@ -496,7 +627,19 @@ SERVICE_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # --- Install relay service ---
 
-# Check if port is already in use by another process
+# Stop a relay previously installed by this script before checking for conflicts.
+# This avoids killing its child process while the service manager restarts it.
+if [ "$OS" = "macos" ]; then
+    launchctl bootout "gui/$(id -u)/$LABEL_RELAY" 2>/dev/null || true
+else
+    if systemctl --user is-active --quiet herdr-relay.service 2>/dev/null; then
+        echo "Stopping existing managed relay service..."
+        systemctl --user stop herdr-relay.service
+    fi
+    "$SCRIPT_DIR/service.sh" stop >/dev/null 2>&1 || true
+fi
+
+# Any remaining listener is unrelated or wasn't managed by this installer.
 EXISTING_PID=$(lsof -iTCP:"$WS_PORT" -sTCP:LISTEN -t 2>/dev/null || true)
 if [ -n "$EXISTING_PID" ]; then
     EXISTING_CMD=$(ps -p "$EXISTING_PID" -o command= 2>/dev/null || echo "unknown")
@@ -538,6 +681,11 @@ if [ -n "$EXISTING_PID" ]; then
     echo "  Stopped."
 fi
 
+echo "Preparing relay dependencies..."
+"$UV_PATH" sync --script "$SCRIPT_DIR/herdr_relay.py"
+echo "  Relay dependencies ready."
+echo ""
+
 echo "Installing relay service..."
 
 if [ "$OS" = "macos" ]; then
@@ -555,9 +703,9 @@ if [ "$OS" = "macos" ]; then
     <string>$LABEL_RELAY</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$UV_PATH</string>
+        <string>/bin/bash</string>
+        <string>$SCRIPT_DIR/service.sh</string>
         <string>run</string>
-        <string>$SCRIPT_DIR/herdr_relay.py</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$SCRIPT_DIR</string>
@@ -575,12 +723,6 @@ if [ "$OS" = "macos" ]; then
     <dict>
         <key>PATH</key>
         <string>$SERVICE_PATH</string>
-        <key>HERDR_BIN</key>
-        <string>${HERDR_PATH:-herdr}</string>
-        <key>HERDR_LOG_DIR</key>
-        <string>$LOG_DIR</string>
-        <key>HERDR_RELAY_PORT</key>
-        <string>$WS_PORT</string>
     </dict>
 </dict>
 </plist>
@@ -592,58 +734,94 @@ else
     UNIT_DIR="$HOME/.config/systemd/user"
     mkdir -p "$UNIT_DIR"
 
-    systemctl --user stop herdr-relay.service 2>/dev/null || true
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        systemctl --user stop herdr-relay.service 2>/dev/null || true
 
-    cat > "$UNIT_DIR/herdr-relay.service" <<EOF
+        cat > "$UNIT_DIR/herdr-relay.service" <<EOF
 [Unit]
 Description=herdr-remote relay
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
-ExecStart=$UV_PATH run $SCRIPT_DIR/herdr_relay.py
+ExecStart=/bin/bash "$SCRIPT_DIR/service.sh" run
 WorkingDirectory=$SCRIPT_DIR
 Restart=always
 RestartSec=5
-Environment=PATH=$SERVICE_PATH
-Environment=HERDR_BIN=${HERDR_PATH:-herdr}
-Environment=HERDR_LOG_DIR=$LOG_DIR
-Environment=HERDR_RELAY_PORT=$WS_PORT
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=default.target
 EOF
 
-    systemctl --user daemon-reload
-    systemctl --user enable herdr-relay.service
-    systemctl --user start herdr-relay.service
+        systemctl --user daemon-reload
+        systemctl --user enable herdr-relay.service
+        systemctl --user start herdr-relay.service
+        SERVICE_MANAGER="systemd-user"
+    else
+        echo "  systemd user services unavailable; using the managed process fallback."
+        "$SCRIPT_DIR/service.sh" restart
+        SERVICE_MANAGER="fallback"
+    fi
 fi
 
 echo "  Relay service installed."
 
-# --- Install tunnel service (if configured) ---
+# --- Install secure proxy service (if configured) ---
 
-if [ "$TUNNEL_MODE" = "named-external" ]; then
+if [ "$TUNNEL_MODE" = "tailscale" ]; then
+    systemctl --user disable --now herdr-tunnel.service 2>/dev/null || true
+    echo "  Proxy: Tailscale Serve is persistent through tailscaled."
+    echo "  URL: $TAILSCALE_URL"
+elif [ "$TUNNEL_MODE" = "named-external" ]; then
     echo "  Tunnel: using existing cloudflared service (not managed by herdr-remote)."
     echo "  Hostname: ${TUNNEL_HOSTNAME:-unknown}"
 elif [ "$TUNNEL_MODE" != "none" ] && [ -n "$CLOUDFLARED_PATH" ]; then
     echo "Installing tunnel service (mode: $TUNNEL_MODE)..."
 
     if [ "$TUNNEL_MODE" = "named" ]; then
-        TUNNEL_ARGS="tunnel run $TUNNEL_NAME"
-        # Write ingress config for named tunnel
         CF_CONFIG_DIR="$HOME/.cloudflared"
         mkdir -p "$CF_CONFIG_DIR"
+        TUNNEL_ID=$("$CLOUDFLARED_PATH" tunnel list --output json 2>/dev/null | \
+            TUNNEL_NAME="$TUNNEL_NAME" python3 -c '
+import json, os, sys
+name = os.environ["TUNNEL_NAME"]
+for tunnel in json.load(sys.stdin):
+    if tunnel.get("name") == name or tunnel.get("id") == name:
+        print(tunnel["id"])
+        break
+' 2>/dev/null) || true
+        if [ -z "$TUNNEL_ID" ]; then
+            echo "  Error: Could not resolve tunnel '$TUNNEL_NAME' to a Cloudflare tunnel ID."
+            exit 1
+        fi
+
+        CF_CREDENTIALS="$CF_CONFIG_DIR/$TUNNEL_ID.json"
+        if [ ! -s "$CF_CREDENTIALS" ]; then
+            echo "  Fetching credentials for tunnel '$TUNNEL_NAME'..."
+            "$CLOUDFLARED_PATH" tunnel token --cred-file "$CF_CREDENTIALS" "$TUNNEL_ID" >/dev/null
+        fi
+        chmod 600 "$CF_CREDENTIALS"
+
+        # Write ingress config for the selected named tunnel.
         CF_CONFIG="$CF_CONFIG_DIR/config-herdr.yml"
         cat > "$CF_CONFIG" <<EOF
-tunnel: $TUNNEL_NAME
-credentials-file: $CF_CONFIG_DIR/${TUNNEL_NAME}.json
+tunnel: $TUNNEL_ID
+credentials-file: $CF_CREDENTIALS
 
 ingress:
   - hostname: $TUNNEL_HOSTNAME
-    service: http://localhost:$WS_PORT
+    service: http://127.0.0.1:$WS_PORT
   - service: http_status:404
 EOF
-        TUNNEL_ARGS="tunnel --config $CF_CONFIG run $TUNNEL_NAME"
+        chmod 600 "$CF_CONFIG"
+        TUNNEL_ARGS="tunnel --config $CF_CONFIG run $TUNNEL_ID"
         echo "  Tunnel config: $CF_CONFIG"
     else
         TUNNEL_ARGS="tunnel --url http://localhost:$WS_PORT"
@@ -695,9 +873,10 @@ EOF
         launchctl bootstrap "gui/$(id -u)" "$PLIST_TUNNEL"
 
     else
-        systemctl --user stop herdr-tunnel.service 2>/dev/null || true
+        if [ "${SERVICE_MANAGER:-}" = "systemd-user" ]; then
+            systemctl --user stop herdr-tunnel.service 2>/dev/null || true
 
-        cat > "$UNIT_DIR/herdr-tunnel.service" <<EOF
+            cat > "$UNIT_DIR/herdr-tunnel.service" <<EOF
 [Unit]
 Description=herdr-remote Cloudflare tunnel
 After=herdr-relay.service
@@ -713,9 +892,15 @@ Environment=PATH=$SERVICE_PATH
 WantedBy=default.target
 EOF
 
-        systemctl --user daemon-reload
-        systemctl --user enable herdr-tunnel.service
-        systemctl --user start herdr-tunnel.service
+            systemctl --user daemon-reload
+            systemctl --user enable herdr-tunnel.service
+            systemctl --user start herdr-tunnel.service
+        else
+            nohup "$CLOUDFLARED_PATH" $TUNNEL_ARGS >>"$LOG_DIR/tunnel-stdout.log" 2>>"$LOG_DIR/tunnel-stderr.log" &
+            TUNNEL_PID=$!
+            printf '%s\n' "$TUNNEL_PID" > "$CONFIG_DIR/tunnel.pid"
+            echo "  Tunnel started with fallback manager (pid $TUNNEL_PID)."
+        fi
     fi
 
     echo "  Tunnel service installed."
@@ -736,30 +921,47 @@ echo ""
 # --- Smoke test ---
 
 echo "Running smoke test..."
-sleep 3
+
+port_is_listening() {
+    lsof -iTCP:"$WS_PORT" -sTCP:LISTEN >/dev/null 2>&1 || \
+        ss -tln 2>/dev/null | grep -q ":$WS_PORT "
+}
+
+# The first uv run may need to download and build relay dependencies.
+SMOKE_TIMEOUT="${HERDR_SMOKE_TIMEOUT:-60}"
+SMOKE_WAITED=0
+while ! port_is_listening && [ "$SMOKE_WAITED" -lt "$SMOKE_TIMEOUT" ]; do
+    sleep 1
+    SMOKE_WAITED=$((SMOKE_WAITED + 1))
+done
 
 # 1. Check port is listening
-if ! lsof -iTCP:"$WS_PORT" -sTCP:LISTEN >/dev/null 2>&1 && \
-   ! ss -tlnp 2>/dev/null | grep -q ":$WS_PORT "; then
+if ! port_is_listening; then
     echo ""
-    echo "  FAIL: Port $WS_PORT is not listening after 3 seconds."
+    echo "  FAIL: Port $WS_PORT is not listening after $SMOKE_TIMEOUT seconds."
     echo "  Check logs: tail -20 $LOG_DIR/relay.log"
     exit 1
 fi
-echo "  [ok] Port $WS_PORT is listening"
+echo "  [ok] Port $WS_PORT is listening (waited ${SMOKE_WAITED}s)"
 
 # 2. WebSocket connect and receive agents broadcast
-SMOKE_RESULT=$(WS_PORT="$WS_PORT" python3 -c '
+SMOKE_RESULT=$(WS_PORT="$WS_PORT" RELAY_TOKEN="$RELAY_TOKEN" "$UV_PATH" run --with websockets python -c '
 import asyncio, json, sys, os
 async def test():
     port = os.environ["WS_PORT"]
+    token = os.environ["RELAY_TOKEN"]
     try:
         import websockets
     except ImportError:
         print("ws_ok:skip")
         return
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}", open_timeout=5) as ws:
+        async with websockets.connect(
+            f"ws://127.0.0.1:{port}",
+            additional_headers={"Authorization": f"Bearer {token}"},
+            subprotocols=["herdr-v1"],
+            open_timeout=5,
+        ) as ws:
             msg = await asyncio.wait_for(ws.recv(), timeout=10)
             data = json.loads(msg)
             if data.get("type") == "agents":
@@ -786,8 +988,8 @@ case "$SMOKE_RESULT" in
         ;;
     ws_fail:*)
         ERR="${SMOKE_RESULT#ws_fail:}"
-        echo "  [warn] WebSocket test failed: $ERR"
-        echo "         Port is listening — relay is running but handshake didn't complete."
+        echo "  FAIL: WebSocket authentication test failed: $ERR"
+        exit 1
         ;;
 esac
 
@@ -800,8 +1002,14 @@ if [ -n "$HERDR_PATH" ]; then
     fi
 fi
 
-# 4. Check tunnel is up (for named tunnels)
-if [ "$TUNNEL_MODE" = "named" ] && [ -n "$TUNNEL_HOSTNAME" ]; then
+# 4. Check secure proxy
+if [ "$TUNNEL_MODE" = "tailscale" ] && [ -n "${TAILSCALE_URL:-}" ]; then
+    if curl -fsS --max-time 10 -o /dev/null "$TAILSCALE_URL"; then
+        echo "  [ok] Tailscale Serve reachable at $TAILSCALE_URL"
+    else
+        echo "  [warn] Tailscale Serve is configured but not reachable yet"
+    fi
+elif [ "$TUNNEL_MODE" = "named" ] && [ -n "$TUNNEL_HOSTNAME" ]; then
     sleep 2
     if curl -s -o /dev/null -w "%{http_code}" "https://$TUNNEL_HOSTNAME" 2>/dev/null | grep -q "^[23]"; then
         echo "  [ok] Tunnel reachable at https://$TUNNEL_HOSTNAME"
@@ -823,20 +1031,30 @@ echo ""
 echo "Smoke test complete."
 echo ""
 echo "=== Summary ==="
-echo "  Relay:   running on :$WS_PORT"
+echo "  Relay:   running on 127.0.0.1:$WS_PORT"
+echo "  Auth:    required (token stored only in $CONFIG_FILE)"
 [ "$TUNNEL_MODE" != "none" ] && echo "  Tunnel:  $TUNNEL_MODE"
 [ "$TUNNEL_MODE" = "named" ] && echo "  URL:     wss://$TUNNEL_HOSTNAME"
+[ "$TUNNEL_MODE" = "tailscale" ] && echo "  URL:     $TAILSCALE_URL"
 echo "  Logs:    $LOG_DIR/"
 echo "  Config:  $CONFIG_FILE"
 echo ""
 echo "Commands:"
 echo "  View logs:  tail -f $LOG_DIR/relay.log"
+echo "  Doctor:     $SCRIPT_DIR/doctor.sh"
+echo "  Rotate key: $SCRIPT_DIR/rotate-token.sh"
 if [ "$OS" = "macos" ]; then
     echo "  Stop:       launchctl bootout gui/$(id -u)/$LABEL_RELAY"
     echo "  Start:      launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/$LABEL_RELAY.plist"
 else
-    echo "  Stop:       systemctl --user stop herdr-relay"
-    echo "  Start:      systemctl --user start herdr-relay"
-    echo "  Status:     systemctl --user status herdr-relay"
+    if [ "${SERVICE_MANAGER:-}" = "systemd-user" ]; then
+        echo "  Stop:       systemctl --user stop herdr-relay"
+        echo "  Start:      systemctl --user start herdr-relay"
+        echo "  Status:     systemctl --user status herdr-relay"
+    else
+        echo "  Stop:       $SCRIPT_DIR/service.sh stop"
+        echo "  Start:      $SCRIPT_DIR/service.sh start"
+        echo "  Status:     $SCRIPT_DIR/service.sh status"
+    fi
 fi
 echo "  Uninstall:  $0 --uninstall"

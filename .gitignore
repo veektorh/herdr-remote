@@ -7,3 +7,10 @@ __pycache__/
 .swiftpm/
 .venv/
 .wrangler/
+
+# Generated relay credentials and device state (normally stored outside the repo)
+config.env
+devices.json
+vapid_private.pem
+vapid_public.txt
+push_subs.json

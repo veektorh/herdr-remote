@@ -1,13 +1,16 @@
-.PHONY: relay-install relay-run relay-plugin ios-build
-
-relay-install:
-	pip install -r relay/requirements.txt
+.PHONY: relay-run relay-plugin relay-doctor test ios-build
 
 relay-run:
-	python3 relay/herdi_relay.py
+	uv run relay/herdr_relay.py
 
 relay-plugin:
 	herdr plugin link relay/
+
+relay-doctor:
+	./relay/doctor.sh
+
+test:
+	./tests/run.sh
 
 ios-build:
 	cd herdi-ios && swift build

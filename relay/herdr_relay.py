@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0"]
+# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0", "qrcode>=8.0"]
 # ///
-"""herdr-remote relay — polls herdr, accepts push events (HTTP POST + WebSocket + UDP), broadcasts to clients."""
-import asyncio, json, logging, os, re, signal, socket, subprocess, time
+"""herdr-remote relay — polls herdr, exposes HTTP/WebSocket APIs, and broadcasts to clients."""
+import asyncio, base64, io, json, logging, os, re, shutil, signal, socket, subprocess, time, urllib.parse
 
 try:
     from websockets.asyncio.server import serve
 except ImportError:
     from websockets.server import serve
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+from relay_security import (
+    SlidingWindowLimiter, ValidationError, origin_is_allowed, request_token, require_secure_bind,
+    validate_message,
+)
+from pairing import PairingError, PairingManager
+from herdr_compat import parse_pane_list
+from vapid_keys import ensure_vapid_keys
 
 from logging.handlers import RotatingFileHandler
 import sys
@@ -30,6 +37,7 @@ AUDIT_FILE = os.path.join(LOG_DIR, "audit.log")
 _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
 _file_handler.setFormatter(_formatter)
+os.chmod(LOG_FILE, 0o600)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_formatter)
 
@@ -39,15 +47,33 @@ log.addHandler(_file_handler)
 log.addHandler(_console_handler)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-HERDR = os.environ.get("HERDR_BIN", "/opt/homebrew/bin/herdr")
+HERDR = os.environ.get("HERDR_BIN", "herdr")
 WS_PORT = int(os.environ.get("HERDR_RELAY_PORT", "8375"))
+WS_BIND = os.environ.get("HERDR_RELAY_BIND", "127.0.0.1")
 POLL_INTERVAL = 2
-AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")  # Optional: shared secret for relay auth
+AUTH_TOKEN = os.environ.get("HERDR_RELAY_TOKEN", "")
+ALLOWED_ORIGINS = {
+    origin.strip().rstrip("/").lower()
+    for origin in os.environ.get("HERDR_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+}
+MDNS_ENABLED = os.environ.get("HERDR_MDNS", "false").lower() == "true"
+CONFIG_DIR = os.environ.get("HERDR_CONFIG_DIR", os.path.expanduser("~/.config/herdr-remote"))
+PUBLIC_URL = os.environ.get("HERDR_PUBLIC_URL", "").rstrip("/")
+MAX_CLIENTS = max(1, int(os.environ.get("HERDR_MAX_CLIENTS", "16")))
+MAX_PUSH_SUBSCRIPTIONS = max(1, int(os.environ.get("HERDR_MAX_PUSH_SUBSCRIPTIONS", "64")))
+pairing = PairingManager(os.path.join(CONFIG_DIR, "devices.json"))
 
 # VAPID Web Push
 VAPID_PUBLIC_KEY = os.environ.get("HERDR_VAPID_PUBLIC", "")
 VAPID_PRIVATE_KEY = os.environ.get("HERDR_VAPID_PRIVATE", "")
 VAPID_SUBJECT = os.environ.get("HERDR_VAPID_SUBJECT", "mailto:herdr@localhost")
+try:
+    VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY = ensure_vapid_keys(
+        CONFIG_DIR, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
+    )
+except Exception as exc:
+    log.warning("Could not initialize Web Push keys: %s", exc)
 push_subscriptions = []  # list of PushSubscription dicts
 PUSH_SUBS_FILE = os.path.join(LOG_DIR, "push_subs.json")
 
@@ -69,13 +95,17 @@ last_statuses = {}
 event_queue = asyncio.Queue()
 pane_remote_map = {}
 known_panes = set()
-
-SAFE_RESPONSES = {"y", "n", "a", "yes", "no", "trust", "yes, single permission", "trust, always allow", "no (tab to edit)", "approve all pending", "configure individually", "exit (cancel subagents)"}
-SAFE_KEYS = {"y", "n", "a", "Enter", "Tab", "Escape", "C-c", "Up", "Down", "Left", "Right", "BSpace"}
+last_poll_at = 0.0
+last_poll_ok = None
+last_agent_count = 0
+pairing_limiter = SlidingWindowLimiter(12, 120)
+auth_failure_limiter = SlidingWindowLimiter(30, 60)
+command_limiter = SlidingWindowLimiter(120, 10)
 
 # --- Audit logging ---
 _audit_handler = RotatingFileHandler(AUDIT_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
 _audit_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+os.chmod(AUDIT_FILE, 0o600)
 audit_log = logging.getLogger("herdr-audit")
 audit_log.setLevel(logging.INFO)
 audit_log.addHandler(_audit_handler)
@@ -86,7 +116,7 @@ def audit(action: str, ip: str, device: str, pane_id: str, detail: str = ""):
     """Append a write action to the audit log as structured JSONL."""
     import datetime
     entry = {
-        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        "ts": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
         "action": action,
         "paneId": pane_id,
         "ip": ip,
@@ -97,20 +127,101 @@ def audit(action: str, ip: str, device: str, pane_id: str, detail: str = ""):
     audit_log.info(json.dumps(entry, separators=(",", ":")))
 
 
+def _security_header_items():
+    return [
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
+        ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+        ("Cross-Origin-Opener-Policy", "same-origin"),
+        ("Content-Security-Policy", (
+            "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self' ws: wss: https:; manifest-src 'self'"
+        )),
+    ]
+
+
+def _headers(items=()):
+    from websockets.datastructures import Headers
+    return Headers([*_security_header_items(), *items])
+
+
+def _json_response(status, reason, payload, extra_headers=()):
+    from websockets.http11 import Response
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    headers = _headers([("Content-Type", "application/json"), ("Cache-Control", "no-store"), *extra_headers])
+    return Response(status, reason, headers, body)
+
+
+def _request_client_key(connection, request) -> str:
+    if request.headers.get("CF-Ray"):
+        cloudflare_ip = request.headers.get("CF-Connecting-IP", "").strip()
+        if cloudflare_ip:
+            return f"cf:{cloudflare_ip}"
+    remote = getattr(connection, "remote_address", None)
+    if isinstance(remote, tuple) and remote:
+        return f"peer:{remote[0]}"
+    return "peer:local-proxy"
+
+
+def _public_url(request):
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    host = request.headers.get("Host", "127.0.0.1:%d" % WS_PORT)
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    if forwarded_proto in {"http", "https"}:
+        scheme = forwarded_proto
+    else:
+        hostname = host.split(":", 1)[0].strip("[]").lower()
+        scheme = "http" if hostname in {"localhost", "127.0.0.1", "::1"} else "https"
+    return f"{scheme}://{host}"
+
+
+def _pairing_qr_data_url(pair_url):
+    import qrcode
+    import qrcode.image.svg
+    image = qrcode.make(pair_url, image_factory=qrcode.image.svg.SvgPathImage, box_size=8, border=3)
+    output = io.BytesIO()
+    image.save(output)
+    return "data:image/svg+xml;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
 # --- Web Push helpers ---
 def _load_push_subs():
     global push_subscriptions
     if os.path.isfile(PUSH_SUBS_FILE):
         try:
             with open(PUSH_SUBS_FILE) as f:
-                push_subscriptions = json.load(f)
+                loaded = json.load(f)
+            push_subscriptions = loaded if isinstance(loaded, list) else []
         except Exception:
             push_subscriptions = []
 
 
 def _save_push_subs():
-    with open(PUSH_SUBS_FILE, "w") as f:
+    fd = os.open(PUSH_SUBS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(push_subscriptions, f)
+    os.chmod(PUSH_SUBS_FILE, 0o600)
+
+
+def _push_subscription(record):
+    """Return the browser subscription from current or legacy storage."""
+    if isinstance(record, dict) and isinstance(record.get("subscription"), dict):
+        return record["subscription"]
+    return record
+
+
+def _remove_device_push_subscriptions(device_id: str) -> int:
+    retained = [
+        record for record in push_subscriptions
+        if not isinstance(record, dict) or record.get("deviceId") != device_id
+    ]
+    removed = len(push_subscriptions) - len(retained)
+    if removed:
+        push_subscriptions[:] = retained
+        _save_push_subs()
+    return removed
 
 
 async def send_web_push(title: str, body: str, url: str = "/", clear: bool = False):
@@ -119,20 +230,23 @@ async def send_web_push(title: str, body: str, url: str = "/", clear: bool = Fal
     Uses collapse topic + TTL so offline devices get only the latest.
     If clear=True, sends a clear instruction instead of showing a notification.
     """
+    result = {"attempted": len(push_subscriptions), "sent": 0, "failed": 0, "removed": 0}
     if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
-        return
+        return result
     try:
         from pywebpush import webpush, WebPushException
     except ImportError:
         log.warning("pywebpush not installed, skipping push")
-        return
+        result["failed"] = len(push_subscriptions)
+        return result
     if clear:
         payload = json.dumps({"type": "clear", "tag": "herdr-blocked"})
     else:
         payload = json.dumps({"title": title, "body": body, "url": url})
     headers = {"Topic": "herdr-herd", "TTL": "21600"}  # 6h TTL, collapse key
     dead = []
-    for i, sub in enumerate(push_subscriptions):
+    for i, record in enumerate(push_subscriptions):
+        sub = _push_subscription(record)
         try:
             webpush(
                 subscription_info=sub,
@@ -141,59 +255,107 @@ async def send_web_push(title: str, body: str, url: str = "/", clear: bool = Fal
                 vapid_claims={"sub": VAPID_SUBJECT},
                 headers=headers,
             )
-        except Exception as e:
-            log.warning("Push failed for sub %d: %s", i, e)
-            if "410" in str(e) or "404" in str(e):
+            result["sent"] += 1
+        except Exception as exc:
+            result["failed"] += 1
+            log.warning("Push delivery failed for subscription %d (%s)", i, type(exc).__name__)
+            if "410" in str(exc) or "404" in str(exc):
                 dead.append(i)
     if dead:
         for i in reversed(dead):
             push_subscriptions.pop(i)
         _save_push_subs()
+        result["removed"] = len(dead)
+    return result
 
 _load_push_subs()
 
 
-def run_herdr(*args, remote=None):
+def run_herdr_result(*args, remote=None):
+    """Run Herdr without logging command arguments, which may contain user input."""
     try:
         if remote:
             cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote, HERDR, *args]
         else:
             cmd = [HERDR, *args]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        return r.stdout.strip()
-    except Exception:
-        return ""
+        return r.returncode == 0, r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+
+
+def run_herdr(*args, remote=None):
+    ok, output = run_herdr_result(*args, remote=remote)
+    return output if ok else ""
+
+
+def submit_text(pane_id: str, value: str, remote=None) -> bool:
+    """Insert text and press Enter only when the text insertion succeeded."""
+    inserted, _ = run_herdr_result("pane", "send-text", pane_id, value, remote=remote)
+    if not inserted:
+        return False
+    submitted, _ = run_herdr_result("pane", "send-keys", pane_id, "Enter", remote=remote)
+    return submitted
+
+
+def command_result(action: str, pane_id: str, ok: bool, request_id=None) -> dict:
+    result = {"type": "command_result", "action": action, "ok": ok, "pane_id": pane_id}
+    if request_id:
+        result["request_id"] = request_id
+    return result
+
+
+def proxy_status(request_host: str, request_headers) -> str:
+    """Report the active proxy rather than stale installer configuration."""
+    if request_host.endswith(".ts.net"):
+        return "tailscale-serve"
+    if request_headers.get("CF-Ray"):
+        return "cloudflare-tunnel"
+
+    tailscale = shutil.which("tailscale")
+    if tailscale:
+        try:
+            status = subprocess.run(
+                [tailscale, "serve", "status"], capture_output=True, text=True, timeout=2
+            )
+            if status.returncode == 0 and f"127.0.0.1:{WS_PORT}" in status.stdout:
+                return "tailscale-serve"
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    try:
+        cloudflare = subprocess.run(
+            ["systemctl", "--user", "is-active", "herdr-tunnel.service"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if cloudflare.returncode == 0 and cloudflare.stdout.strip() == "active":
+            return "cloudflare-tunnel"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "none"
 
 
 def get_agents_from_host(remote=None):
-    raw = run_herdr("pane", "list", remote=remote)
-    host_label = remote or "local"
-    try:
-        data = json.loads(raw)
-        panes = data.get("result", {}).get("panes", [])
-        return [
-            {
-                "pane_id": p["pane_id"],
-                "agent": p.get("agent", ""),
-                "label": p.get("label", ""),
-                "status": p.get("agent_status", "unknown"),
-                "cwd": p.get("cwd", ""),
-                "project": os.path.basename(p.get("cwd", "")),
-                "host": host_label,
-                "remote": remote,
-                "workspace_id": p.get("workspace_id", ""),
-                "tab_id": p.get("tab_id", ""),
-            }
-            for p in panes if p.get("agent")
-        ]
-    except (json.JSONDecodeError, KeyError):
-        return []
+    _, agents = query_agents_from_host(remote=remote)
+    return agents
+
+
+def query_agents_from_host(remote=None):
+    ok, raw = run_herdr_result("pane", "list", remote=remote)
+    return ok, parse_pane_list(raw, remote=remote) if ok else []
 
 
 def get_all_agents():
-    agents = get_agents_from_host(remote=None)
+    global last_poll_at, last_poll_ok, last_agent_count
+    local_ok, agents = query_agents_from_host(remote=None)
+    poll_results = [local_ok]
     for remote in REMOTES:
-        agents.extend(get_agents_from_host(remote=remote))
+        remote_ok, remote_agents = query_agents_from_host(remote=remote)
+        poll_results.append(remote_ok)
+        agents.extend(remote_agents)
+    last_poll_at = time.time()
+    last_poll_ok = all(poll_results)
+    last_agent_count = len(agents)
     return agents
 
 
@@ -251,7 +413,7 @@ async def poll_loop():
                 await send_web_push(
                     title=f"🐑 {a['project']} blocked",
                     body=content[:120],
-                    url=f"/?pane={pid}",
+                    url=f"/?pane={urllib.parse.quote(pid, safe='')}",
                 )
             # Send clear push when agent unblocks
             if status != "blocked" and last_statuses.get(pid) == "blocked":
@@ -305,104 +467,203 @@ async def event_push():
 
 
 async def process_request(connection, request):
-    """Handle HTTP POST on the same port as WebSocket."""
+    """Handle HTTP endpoints on the same port as WebSocket."""
     from websockets.http11 import Response
-    from websockets.datastructures import Headers
 
-    # Token auth (if configured)
-    if AUTH_TOKEN:
-        token = None
-        for key, value in request.headers.raw_items():
-            if key.lower() == "authorization":
-                token = value.replace("Bearer ", "")
-        # Also check query param ?token=
-        if not token and "token=" in (request.path or ""):
-            import urllib.parse
-            _, qs = request.path.split("?", 1) if "?" in request.path else (request.path, "")
-            params = urllib.parse.parse_qs(qs)
-            token = params.get("token", [None])[0]
-        if token != AUTH_TOKEN:
-            headers = Headers([("Content-Type", "text/plain")])
-            return Response(401, "Unauthorized", headers, b"Invalid token\n")
+    path = (request.path or "/").split("?")[0]
+    origin = request.headers.get("Origin", "")
+    host = request.headers.get("Host", "")
+    upgrade = request.headers.get("Upgrade", "").lower()
+    client_key = _request_client_key(connection, request)
 
-    # Check if this is a WebSocket upgrade
-    upgrade = None
-    for key, value in request.headers.raw_items():
-        if key.lower() == "upgrade":
-            upgrade = value.lower()
+    # One-time exchange is intentionally unauthenticated; the code is random,
+    # short-lived, single-use, and carried only in the URL fragment until exchange.
+    if path == "/api/pair/exchange":
+        if not origin_is_allowed(origin, host, ALLOWED_ORIGINS):
+            return Response(403, "Forbidden", _headers([("Content-Type", "text/plain")]), b"Forbidden\n")
+        if not pairing_limiter.allow(client_key):
+            return _json_response(
+                429, "Too Many Requests", {"error": "too many pairing attempts"},
+                [("Retry-After", "120")],
+            )
+        import urllib.parse
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(request.path).query)
+        code = params.get("code", [""])[0]
+        name = params.get("name", ["Browser"])[0]
+        try:
+            credential = pairing.exchange(code, name)
+        except PairingError as exc:
+            return _json_response(400, "Bad Request", {"error": str(exc)})
+        log.info("Paired device: id=%s", credential["deviceId"])
+        audit("pair_device", "local", "browser", credential["deviceId"])
+        return _json_response(200, "OK", credential)
+
+    auth = pairing.authenticate(request_token(request.headers, request.path), AUTH_TOKEN)
+    protected = path.startswith("/api/") or path == "/events" or upgrade == "websocket"
+    if protected and not auth and not auth_failure_limiter.allow(client_key):
+        return _json_response(
+            429, "Too Many Requests", {"error": "too many authentication failures"},
+            [("Retry-After", "60")],
+        )
+
+    if path == "/api/pair/start":
+        if not auth or not auth.allows("pair"):
+            return _json_response(401, "Unauthorized", {"error": "admin token required"})
+        pair_data = pairing.start()
+        pair_url = f"{_public_url(request)}/#pair={pair_data['code']}"
+        pair_data.update({"pairUrl": pair_url, "qr": _pairing_qr_data_url(pair_url)})
+        return _json_response(200, "OK", pair_data)
+
+    if path == "/api/devices":
+        if not auth or not auth.allows("pair"):
+            return _json_response(401, "Unauthorized", {"error": "admin token required"})
+        return _json_response(200, "OK", {"devices": pairing.list_devices()})
+
+    if path == "/api/devices/revoke":
+        if not auth or not auth.allows("pair"):
+            return _json_response(401, "Unauthorized", {"error": "admin token required"})
+        import urllib.parse
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(request.path).query)
+        device_id = params.get("id", [""])[0]
+        revoked = pairing.revoke(device_id)
+        disconnected = 0
+        removed_push_subscriptions = 0
+        if revoked:
+            removed_push_subscriptions = _remove_device_push_subscriptions(device_id)
+            matching_clients = [
+                client for client in clients
+                if getattr(getattr(client, "herdr_auth", None), "device_id", "") == device_id
+            ]
+            if matching_clients:
+                await asyncio.gather(*(
+                    client.close(code=4003, reason="device credential revoked")
+                    for client in matching_clients
+                ), return_exceptions=True)
+                disconnected = len(matching_clients)
+            audit("revoke_device", "local", auth.role, device_id)
+        return _json_response(200, "OK", {
+            "revoked": revoked,
+            "disconnected": disconnected,
+            "removedPushSubscriptions": removed_push_subscriptions,
+        })
+
+    if path == "/api/push/test":
+        if not auth or not auth.allows("push"):
+            return _json_response(401, "Unauthorized", {"error": "push permission required"})
+        result = await send_web_push(
+            "Herdr test notification",
+            "Push notifications are working.",
+            "/",
+        )
+        audit("test_push", "local", auth.role, auth.device_id)
+        return _json_response(200, "OK", result)
+
+    if path == "/api/health":
+        if not auth:
+            return _json_response(401, "Unauthorized", {"error": "authentication required"})
+        herdr_available = (
+            os.path.isfile(HERDR) and os.access(HERDR, os.X_OK)
+            if os.path.isabs(HERDR) else shutil.which(HERDR) is not None
+        )
+        request_host = host.split(":", 1)[0].strip("[]").lower()
+        push_configured = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
+        push_count = len(push_subscriptions)
+        poll_age = round(time.time() - last_poll_at, 1) if last_poll_at else None
+        return _json_response(200, "OK", {
+            "relay": "ok",
+            "herdr": "available" if herdr_available else "not-found",
+            "authentication": "required" if AUTH_TOKEN else "local-only",
+            "bind": f"{WS_BIND}:{WS_PORT}",
+            "proxy": proxy_status(request_host, request.headers),
+            "push": (
+                "subscribed" if push_count else
+                "configured-no-subscriptions" if push_configured else
+                "not-configured"
+            ),
+            "pushSubscriptions": push_count,
+            "pairedDevices": len(pairing.list_devices()),
+            "herdrPoll": (
+                "not-yet-polled" if last_poll_ok is None else
+                "degraded" if not last_poll_ok else
+                "stale" if poll_age is not None and poll_age > POLL_INTERVAL * 3 else
+                "fresh"
+            ),
+            "lastPollSeconds": poll_age,
+            "agents": last_agent_count,
+            "clients": len(clients),
+            "maxClients": MAX_CLIENTS,
+            "credentialRole": auth.role,
+            "canPair": auth.allows("pair"),
+        })
+
+    # Check if this is a WebSocket upgrade.
     if upgrade == "websocket":
+        if not origin_is_allowed(origin, host, ALLOWED_ORIGINS):
+            return Response(403, "Forbidden", _headers([("Content-Type", "text/plain")]), b"Origin not allowed\n")
+        if not auth:
+            return Response(401, "Unauthorized", _headers([("Content-Type", "text/plain")]), b"Invalid token\n")
+        if len(clients) >= MAX_CLIENTS:
+            return _json_response(503, "Service Unavailable", {"error": "relay client limit reached"})
+        if connection is not None:
+            connection.herdr_auth = auth
         return None  # proceed with WebSocket handshake
 
-    # For CORS preflight
-    if request.path and "OPTIONS" in str(request.headers):
-        headers = Headers([
-            ("Access-Control-Allow-Origin", "*"),
-            ("Access-Control-Allow-Methods", "POST, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Content-Type"),
-        ])
-        return Response(204, "No Content", headers, b"")
+    # Protect every API and event endpoint. Static app assets remain public.
+    if path.startswith("/api/") or path == "/events":
+        if not auth:
+            return Response(401, "Unauthorized", _headers([("Content-Type", "text/plain")]), b"Invalid token\n")
 
     # Serve web app for GET / or GET /index.html
-    path = (request.path or "/").split("?")[0]
     if path in ("/", "/index.html"):
         web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
         index_path = os.path.join(web_dir, "index.html")
         if os.path.isfile(index_path):
             with open(index_path, "rb") as f:
                 body = f.read()
-            headers = Headers([
+            headers = _headers([
                 ("Content-Type", "text/html; charset=utf-8"),
                 ("Cache-Control", "no-cache"),
             ])
             return Response(200, "OK", headers, body)
 
-    # Serve service worker
-    if path == "/sw.js":
+    # Serve PWA assets with explicit content types.
+    static_files = {
+        "/sw.js": ("sw.js", "application/javascript"),
+        "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+        "/logo.svg": ("logo.svg", "image/svg+xml"),
+        "/icon-192.png": ("icon-192.png", "image/png"),
+        "/icon-512.png": ("icon-512.png", "image/png"),
+        "/icon-maskable-512.png": ("icon-maskable-512.png", "image/png"),
+    }
+    if path in static_files:
         web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-        sw_path = os.path.join(web_dir, "sw.js")
-        if os.path.isfile(sw_path):
-            with open(sw_path, "rb") as f:
+        filename, content_type = static_files[path]
+        asset_path = os.path.join(web_dir, filename)
+        if os.path.isfile(asset_path):
+            with open(asset_path, "rb") as f:
                 body = f.read()
-            headers = Headers([
-                ("Content-Type", "application/javascript"),
-                ("Cache-Control", "no-cache"),
-                ("Service-Worker-Allowed", "/"),
-            ])
-            return Response(200, "OK", headers, body)
+            header_items = [("Content-Type", content_type), ("Cache-Control", "no-cache")]
+            if path == "/sw.js":
+                header_items.append(("Service-Worker-Allowed", "/"))
+            return Response(200, "OK", _headers(header_items), body)
 
     # Serve VAPID public key
     if path == "/api/vapid-public-key":
-        body = json.dumps({"publicKey": VAPID_PUBLIC_KEY}).encode()
-        headers = Headers([
-            ("Content-Type", "application/json"),
-            ("Access-Control-Allow-Origin", "*"),
-        ])
-        return Response(200, "OK", headers, body)
+        return _json_response(200, "OK", {"publicKey": VAPID_PUBLIC_KEY})
 
-    # Serve logo.svg
-    if path == "/logo.svg":
-        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
-        svg_path = os.path.join(web_dir, "logo.svg")
-        if os.path.isfile(svg_path):
-            with open(svg_path, "rb") as f:
-                body = f.read()
-            headers = Headers([("Content-Type", "image/svg+xml")])
-            return Response(200, "OK", headers, body)
-
-    # HTTP POST — parse event from URL query params as fallback
+    # Legacy HTTP event ingestion. Authentication is enforced above.
     import urllib.parse
-    if "?" in (request.path or ""):
+    if path == "/events" and "?" in (request.path or ""):
         _, qs = request.path.split("?", 1)
         params = urllib.parse.parse_qs(qs)
         if "d" in params:
             try:
                 event = json.loads(urllib.parse.unquote(params["d"][0]))
-                event_queue.put_nowait(event)
+                event_queue.put_nowait(validate_message(event))
             except Exception:
-                pass
+                return Response(400, "Bad Request", _headers([("Content-Type", "text/plain")]), b"Invalid event\n")
 
-    headers = Headers([("Access-Control-Allow-Origin", "*")])
-    return Response(200, "OK", headers, b"ok\n")
+    return Response(404, "Not Found", _headers([("Content-Type", "text/plain")]), b"Not found\n")
 
 
 async def handle_client(ws):
@@ -430,27 +691,56 @@ async def handle_client(ws):
 
     log.info("Client connected: ip=%s device=%s origin=%s", ip, device, origin or "-")
     clients.add(ws)
+    auth = getattr(ws, "herdr_auth", None)
     connected_at = time.monotonic()
     try:
         async for raw in ws:
+            if not isinstance(raw, str) or len(raw) > 65536:
+                await ws.send(json.dumps({"type": "error", "message": "message too large"}))
+                continue
             try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
+                msg = validate_message(json.loads(raw))
+            except (json.JSONDecodeError, ValidationError) as exc:
+                await ws.send(json.dumps({"type": "error", "message": str(exc)}))
                 continue
             msg_type = msg.get("type")
+            required_scope = {
+                "respond": "control", "send_keys": "control", "send_text": "control",
+                "submit_text": "control",
+                "read_pane": "read", "agent_event": "events",
+                "push_subscribe": "push", "push_unsubscribe": "push",
+            }[msg_type]
+            if not auth or not auth.allows(required_scope):
+                if msg_type in {"respond", "send_keys", "send_text", "submit_text"}:
+                    await ws.send(json.dumps(command_result(
+                        msg_type, msg["pane_id"], False, msg.get("request_id")
+                    )))
+                    continue
+                await ws.send(json.dumps({"type": "error", "message": "not authorized for this action"}))
+                continue
+            if msg_type in {"respond", "send_keys", "send_text", "submit_text"}:
+                limiter_key = getattr(auth, "device_id", "") or f"{getattr(auth, 'role', 'client')}:{ip}"
+                if not command_limiter.allow(limiter_key):
+                    audit("rate_limited", ip, device, msg["pane_id"], f"action={msg_type}")
+                    await ws.send(json.dumps(command_result(
+                        msg_type, msg["pane_id"], False, msg.get("request_id")
+                    )))
+                    continue
             if msg_type == "respond":
                 pane_id = msg["pane_id"]
                 if pane_id not in known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(command_result(
+                        msg_type, pane_id, False, msg.get("request_id")
+                    )))
                     continue
-                text = msg.get("text", "")
-                if text.strip().lower() not in SAFE_RESPONSES:
-                    await ws.send(json.dumps({"type": "error", "message": "response not in allowlist"}))
-                    continue
+                text = msg["text"]
                 remote = pane_remote_map.get(pane_id)
-                log.info("Response from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
-                audit("respond", ip, device, pane_id, f"text={text!r}")
-                run_herdr("pane", "send-text", pane_id, text + "\n", remote=remote)
+                log.info("Allowed response from %s (%s): pane=%s", ip, device, pane_id)
+                audit("respond", ip, device, pane_id)
+                ok, _ = run_herdr_result("pane", "send-text", pane_id, text + "\n", remote=remote)
+                await ws.send(json.dumps(command_result(
+                    msg_type, pane_id, ok, msg.get("request_id")
+                )))
             elif msg_type == "agent_event":
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
@@ -458,47 +748,92 @@ async def handle_client(ws):
                 if pane_id not in known_panes:
                     await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
                     continue
-                lines = msg.get("lines", "30")
+                lines = msg["lines"]
                 remote = pane_remote_map.get(pane_id)
                 content = run_herdr("pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
                 await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content}))
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 if pane_id not in known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(command_result(
+                        msg_type, pane_id, False, msg.get("request_id")
+                    )))
                     continue
-                keys = msg.get("keys", [])
-                if not all(k in SAFE_KEYS for k in keys):
-                    await ws.send(json.dumps({"type": "error", "message": "keys contain disallowed values"}))
-                    continue
+                keys = msg["keys"]
                 remote = pane_remote_map.get(pane_id)
                 log.info("Keys from %s (%s): pane=%s keys=%s", ip, device, pane_id, keys)
                 audit("send_keys", ip, device, pane_id, f"keys={keys}")
-                run_herdr("pane", "send-keys", pane_id, *keys, remote=remote)
+                ok, _ = run_herdr_result("pane", "send-keys", pane_id, *keys, remote=remote)
+                await ws.send(json.dumps(command_result(
+                    msg_type, pane_id, ok, msg.get("request_id")
+                )))
             elif msg_type == "send_text":
                 pane_id = msg["pane_id"]
                 if pane_id not in known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    await ws.send(json.dumps(command_result(
+                        msg_type, pane_id, False, msg.get("request_id")
+                    )))
                     continue
-                text = msg.get("text", "")
-                if not text or len(text) > 1000:
-                    await ws.send(json.dumps({"type": "error", "message": "text empty or too long"}))
-                    continue
+                text = msg["text"]
                 remote = pane_remote_map.get(pane_id)
-                log.info("Text from %s (%s): pane=%s text=%r", ip, device, pane_id, text)
-                audit("send_text", ip, device, pane_id, f"text={text!r}")
-                run_herdr("pane", "send-text", pane_id, text, remote=remote)
+                log.info("Text input from %s (%s): pane=%s length=%d", ip, device, pane_id, len(text))
+                audit("send_text", ip, device, pane_id, f"length={len(text)}")
+                ok, _ = run_herdr_result("pane", "send-text", pane_id, text, remote=remote)
+                await ws.send(json.dumps(command_result(
+                    msg_type, pane_id, ok, msg.get("request_id")
+                )))
+            elif msg_type == "submit_text":
+                pane_id = msg["pane_id"]
+                request_id = msg.get("request_id")
+                if pane_id not in known_panes:
+                    await ws.send(json.dumps(command_result(
+                        msg_type, pane_id, False, request_id
+                    )))
+                    continue
+                text = msg["text"]
+                remote = pane_remote_map.get(pane_id)
+                log.info("Text submission from %s (%s): pane=%s length=%d", ip, device, pane_id, len(text))
+                audit("submit_text", ip, device, pane_id, f"length={len(text)}")
+                ok = submit_text(pane_id, text, remote=remote)
+                await ws.send(json.dumps(command_result(
+                    msg_type, pane_id, ok, request_id
+                )))
             elif msg_type == "push_subscribe":
                 sub = msg.get("subscription")
-                if sub and sub not in push_subscriptions:
-                    push_subscriptions.append(sub)
+                existing = False
+                migrated = False
+                for index, record in enumerate(push_subscriptions):
+                    if _push_subscription(record) != sub:
+                        continue
+                    existing = True
+                    if auth.device_id and not record.get("deviceId"):
+                        push_subscriptions[index] = {
+                            "deviceId": auth.device_id,
+                            "subscription": sub,
+                        }
+                        migrated = True
+                    break
+                if sub and not existing:
+                    if len(push_subscriptions) >= MAX_PUSH_SUBSCRIPTIONS:
+                        await ws.send(json.dumps({
+                            "type": "push_subscribed", "ok": False,
+                            "error": "push subscription limit reached",
+                        }))
+                        continue
+                    push_subscriptions.append({
+                        "deviceId": auth.device_id,
+                        "subscription": sub,
+                    })
+                    migrated = True
+                if migrated:
                     _save_push_subs()
                     log.info("Push subscription added from %s (%s)", ip, device)
                 await ws.send(json.dumps({"type": "push_subscribed", "ok": True}))
             elif msg_type == "push_unsubscribe":
                 sub = msg.get("subscription")
-                if sub and sub in push_subscriptions:
-                    push_subscriptions.remove(sub)
+                retained = [record for record in push_subscriptions if _push_subscription(record) != sub]
+                if len(retained) != len(push_subscriptions):
+                    push_subscriptions[:] = retained
                     _save_push_subs()
                 await ws.send(json.dumps({"type": "push_unsubscribed", "ok": True}))
     except (ConnectionClosedError, ConnectionClosedOK):
@@ -537,7 +872,8 @@ def start_mdns():
 
 
 async def main():
-    zc, info = start_mdns()
+    require_secure_bind(WS_BIND, AUTH_TOKEN)
+    zc, info = start_mdns() if MDNS_ENABLED else (None, None)
     loop = asyncio.get_running_loop()
     try:
         await loop.create_datagram_endpoint(UDPPlugin, local_addr=("127.0.0.1", 8376))
@@ -545,13 +881,23 @@ async def main():
         log.warning("UDP 8376 in use, plugin push disabled")
     asyncio.create_task(poll_loop())
     asyncio.create_task(event_push())
-    server = await serve(handle_client, "0.0.0.0", WS_PORT, process_request=process_request)
+    server = await serve(
+        handle_client, WS_BIND, WS_PORT,
+        process_request=process_request,
+        subprotocols=["herdr-v1"],
+    )
     hosts = ["local"] + REMOTES
-    log.info("herdr-remote relay on :%d (WebSocket + HTTP POST)", WS_PORT)
+    log.info("herdr-remote relay on %s:%d (WebSocket + HTTP)", WS_BIND, WS_PORT)
+    log.info("Authentication: %s", "required" if AUTH_TOKEN else "local-only listener")
     log.info("Polling: %s", ", ".join(hosts))
     stop = loop.create_future()
+
+    def request_stop():
+        if not stop.done():
+            stop.set_result(None)
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set_result, None)
+        loop.add_signal_handler(sig, request_stop)
     await stop
     server.close()
     if zc and info:

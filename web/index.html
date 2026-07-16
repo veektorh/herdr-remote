@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#1a1b26">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;herdr-remote&quot;,&quot;short_name&quot;:&quot;herdr&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;%230a0a0a&quot;,&quot;theme_color&quot;:&quot;%230a0a0a&quot;}">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <title>herdr-remote</title>
 <style>
 :root {
@@ -34,6 +37,23 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .setting-group select { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
 .setting-group .hint { font-size: 0.65rem; color: var(--muted); margin-top: 4px; }
 .setting-group button { margin-top: 8px; padding: 8px 16px; border-radius: 6px; border: none; background: var(--green); color: #000; font-weight: 600; font-size: 13px; cursor: pointer; }
+.pairing-result { display: none; margin-top: 12px; text-align: center; }
+.pairing-result.active { display: block; }
+.pairing-result img { width: min(240px, 80vw); padding: 10px; border-radius: 10px; background: #fff; }
+.pairing-code { margin-top: 8px; font-family: monospace; font-size: 1.25rem; letter-spacing: 0.15em; }
+.device-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); }
+.device-row:first-child { border-top: 0; }
+.device-info { flex: 1; min-width: 0; }
+.device-name { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-meta { color: var(--muted); font-size: 0.65rem; margin-top: 2px; }
+.device-row button { margin: 0; background: var(--red); color: #fff; }
+.install-banner { display: none; margin: 12px; padding: 12px; border: 1px solid var(--blue); border-radius: 10px; background: var(--surface); align-items: center; gap: 12px; }
+.install-banner.active { display: flex; }
+.install-banner span { flex: 1; font-size: 0.78rem; }
+.install-banner button { border: 0; border-radius: 7px; padding: 9px 13px; background: var(--blue); color: #fff; font-weight: 600; }
+.connection-label { color: var(--muted); font-size: 0.65rem; white-space: nowrap; }
+.agent-filter { padding: 10px 12px 0; }
+.agent-filter input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 14px; }
 
 
 /* Agent list */
@@ -60,10 +80,14 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: color-mix(in srgb, var(--bg) 90%, black); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; color: var(--text); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 .quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
+.quick-actions button:disabled, #actionKeys button:disabled { opacity: 0.55; cursor: wait; }
 .btn-yes { background: var(--green); color: #000; } .btn-trust { background: var(--blue); color: #fff; } .btn-no { background: var(--red); color: #fff; }
 .term-input { border-top: 1px solid var(--border); padding: 8px 12px; display: flex; gap: 6px; background: var(--surface); flex-shrink: 0; }
 .term-input input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; font-family: monospace; min-width: 0; }
 .term-input button { padding: 10px 14px; border-radius: 6px; border: none; background: var(--blue); color: #fff; font-weight: 700; font-size: 16px; flex-shrink: 0; }
+.term-input button:disabled { opacity: 0.55; cursor: wait; }
+.command-status { min-height: 18px; padding: 1px 12px 3px; background: var(--surface); color: var(--muted); font-size: 0.68rem; flex-shrink: 0; }
+.command-status.error { color: var(--red); }
 .term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 4px; background: var(--surface); flex-shrink: 0; padding-bottom: env(safe-area-inset-bottom, 6px); align-items: center; overflow-x: auto; }
 .term-keys button { padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; }
 .term-keys button:active { background: var(--border); }
@@ -98,20 +122,32 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 <body>
 
 <div class="header">
-  <span class="dot" id="statusDot"></span>
+  <span class="dot" id="statusDot" aria-hidden="true"></span>
   <h1>🐑 herdr</h1>
+  <span class="connection-label" id="connectionLabel" role="status" aria-live="polite">Disconnected</span>
   <span id="agentCount" style="font-size:0.7rem;color:var(--muted)"></span>
+  <button id="installHeaderButton" onclick="installPwa()" aria-label="Install app" style="display:none">⬇</button>
   <button onclick="toggleTimeline()" aria-label="Timeline">🕐</button>
   <button onclick="toggleSettings()" aria-label="Settings">⚙</button>
 </div>
 
 <div class="settings" id="settingsView">
   <h2>Settings</h2>
+  <div class="setting-group" id="pairingGroup">
+    <label>Pair another device</label>
+    <button onclick="createPairing()">Create 2-minute pairing code</button>
+    <div class="hint">Requires the admin token. The QR code is single-use and expires automatically.</div>
+    <div class="pairing-result" id="pairingResult" aria-live="polite">
+      <img id="pairingQr" alt="Pair this device QR code" />
+      <div class="pairing-code" id="pairingCode"></div>
+      <div class="hint" id="pairingExpiry"></div>
+    </div>
+  </div>
   <div class="setting-group">
     <label for="relayUrl">Relay URL</label>
-    <input id="relayUrl" type="url" placeholder="wss://your-tunnel.trycloudflare.com" />
-    <label for="relayToken" style="margin-top:8px">Token (optional)</label>
-    <input id="relayToken" type="password" placeholder="shared secret" />
+    <input id="relayUrl" type="url" placeholder="wss://your-relay.example" />
+    <label for="relayToken" style="margin-top:8px">Admin or device token</label>
+    <input id="relayToken" type="password" placeholder="relay credential" />
     <button onclick="saveAndConnect()">Connect</button>
     <div class="hint">Run <code>./relay/start.sh</code> to get a URL. <a href="https://github.com/dcolinmorgan/herdr-remote/blob/main/QUICKSTART.md" style="color:var(--blue)">Setup guide →</a></div>
   </div>
@@ -120,7 +156,13 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <label>Push Notifications</label>
     <div id="pushStatus" style="font-size:0.75rem;margin-bottom:6px"></div>
     <button id="pushToggle" onclick="togglePush()">Enable Push</button>
+    <button id="pushTest" onclick="testPush()">Test notification</button>
     <div class="hint">Get notified when agents are blocked, even with this tab closed.</div>
+  </div>
+  <div class="setting-group" id="devicesGroup" style="display:none">
+    <label>Paired devices</label>
+    <div id="devicesList" aria-live="polite"></div>
+    <div class="hint">Revoking a device disconnects it and removes its push subscriptions.</div>
   </div>
   <div class="setting-group">
     <label>Status</label>
@@ -128,7 +170,16 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   </div>
 </div>
 
+<div class="install-banner" id="installBanner" role="status">
+  <span>Install Herdr for a full-screen Android or Windows experience.</span>
+  <button onclick="installPwa()">Install</button>
+</div>
+
 <div class="view" id="agentListView">
+  <div class="agent-filter">
+    <label for="agentSearch" style="position:absolute;left:-10000px">Filter sessions</label>
+    <input id="agentSearch" type="search" placeholder="Filter sessions or workspaces…" autocomplete="off" />
+  </div>
   <div class="agents" id="agents"></div>
 </div>
 
@@ -144,10 +195,11 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   </div>
   <div class="term-content" id="termContent">Loading…</div>
   <div class="quick-actions" id="quickActions"></div>
-  <div class="term-input">
-    <input id="termInput" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
-    <button onclick="sendText()">⏎</button>
-  </div>
+  <form class="term-input" id="termInputForm">
+    <input id="termInput" type="text" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Message" />
+    <button id="termSendButton" type="submit" aria-label="Send message">⏎</button>
+  </form>
+  <div class="command-status" id="commandStatus" role="status" aria-live="polite"></div>
   <div class="term-keys">
     <button onclick="sendKey('Tab')">⇥</button>
     <button onclick="sendKey('Escape')">Esc</button>
@@ -185,6 +237,10 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 let ws = null, agents = [], activePane = null, refreshInterval = null, userScrolledUp = false;
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
+let pendingSubmission = null;
+const pendingControls = new Map();
+let connectionState = 'disconnected', lastAgentUpdate = 0, reconnectTimer = null;
+let pushRelayState = 'not-synced';
 
 // Settings — auto-detect relay when served from same origin
 const autoRelayUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
@@ -205,9 +261,7 @@ function toggleSettings() {
   document.getElementById('agentListView').style.display = show ? 'none' : '';
   document.getElementById('timelineView').style.display = 'none';
   if (show) {
-    document.getElementById('settingsStatus').innerHTML = ws && ws.readyState === 1
-      ? `<span style="color:var(--green)">● Connected</span> · ${agents.length} agents`
-      : `<span style="color:var(--red)">● Disconnected</span>`;
+    refreshHealth();
   }
 }
 
@@ -226,7 +280,7 @@ function renderTimeline() {
   el.innerHTML = timeline.map(e => {
     const t = e.time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     const color = e.status==='blocked'?'var(--red)':e.status==='working'?'var(--green)':'var(--muted)';
-    return `<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted)">${t}</span><span style="flex:1">${e.project} (${e.agent})</span><span style="color:${color}">${e.status}</span></div>`;
+    return `<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted)">${h(t)}</span><span style="flex:1">${h(e.project)} (${h(e.agent)})</span><span style="color:${color}">${h(e.status)}</span></div>`;
   }).join('');
 }
 
@@ -245,22 +299,80 @@ function saveAndConnect() {
 function connect() {
   let url = localStorage.getItem('herdr_relay_url') || (isServedFromRelay ? autoRelayUrl : (isDemo ? DEMO_RELAY : ''));
   if (!url) { showSetup(); return; }
+  clearTimeout(reconnectTimer);
   if (ws) ws.close();
   setStatus('connecting');
-  // Append token as query param if stored separately
   const token = localStorage.getItem('herdr_relay_token');
-  let wsUrl = url;
-  if (token) wsUrl += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
-  ws = new WebSocket(wsUrl);
-  ws.onopen = () => setStatus('connected');
-  ws.onclose = () => { setStatus('disconnected'); setTimeout(connect, 3000); };
-  ws.onerror = () => setStatus('disconnected');
-  ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+  const protocols = ['herdr-v1'];
+  if (token) protocols.push('herdr-auth.' + token);
+  const socket = new WebSocket(url, protocols);
+  ws = socket;
+  socket.onopen = () => {
+    if (ws !== socket) return;
+    setStatus('connected');
+    syncPushSubscription();
+  };
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    setStatus('disconnected');
+    if (pendingSubmission) {
+      failPendingSubmission('Connection lost. Your message was not cleared.');
+    }
+    failPendingControls('Connection lost before Herdr confirmed the action.');
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+  socket.onerror = () => { if (ws === socket) setStatus('disconnected'); };
+  socket.onmessage = (e) => handleMessage(JSON.parse(e.data));
 }
 
 function setStatus(s) {
+  connectionState = s;
   const dot = document.getElementById('statusDot');
   dot.style.background = s==='connected'?'var(--green)':s==='connecting'?'var(--orange)':'var(--red)';
+  updateConnectionLabel();
+}
+
+function updateConnectionLabel() {
+  const label = document.getElementById('connectionLabel');
+  if (connectionState !== 'connected') {
+    label.textContent = connectionState === 'connecting' ? 'Connecting…' : connectionState === 'offline' ? 'Offline' : 'Disconnected';
+    return;
+  }
+  if (!lastAgentUpdate) {
+    label.textContent = 'Connected';
+    return;
+  }
+  const age = Math.max(0, Math.floor((Date.now() - lastAgentUpdate) / 1000));
+  label.textContent = age > 10 ? `Stale · ${age}s` : age < 2 ? 'Live' : `Live · ${age}s`;
+  document.getElementById('statusDot').style.background = age > 10 ? 'var(--orange)' : 'var(--green)';
+}
+
+function h(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+}
+
+async function refreshHealth() {
+  const status = document.getElementById('settingsStatus');
+  const relayUrl = localStorage.getItem('herdr_relay_url') || autoRelayUrl;
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  const token = localStorage.getItem('herdr_relay_token') || '';
+  try {
+    const response = await fetch(httpUrl + '/api/health', {headers: token ? {'Authorization': `Bearer ${token}`} : {}});
+    const health = await response.json();
+    if (!response.ok) throw new Error(health.error || `HTTP ${response.status}`);
+    status.innerHTML = [
+      ['Relay', health.relay], ['Herdr', health.herdr], ['Authentication', health.authentication],
+      ['Credential', health.credentialRole], ['Proxy', health.proxy], ['Push', health.push],
+      ['Herdr poll', health.herdrPoll], ['Last poll', health.lastPollSeconds == null ? 'not yet' : `${health.lastPollSeconds}s ago`],
+      ['Agents', health.agents], ['Clients', `${health.clients}/${health.maxClients}`],
+      ['Push subscriptions', health.pushSubscriptions], ['Paired devices', health.pairedDevices]
+    ].map(([label, value]) => `<div><strong>${h(label)}:</strong> ${h(value)}</div>`).join('');
+    document.getElementById('pairingGroup').style.display = health.canPair ? '' : 'none';
+    document.getElementById('devicesGroup').style.display = health.canPair ? '' : 'none';
+    if (health.canPair) await refreshDevices();
+  } catch (error) {
+    status.innerHTML = `<span style="color:var(--red)">Health unavailable: ${h(error.message)}</span>`;
+  }
 }
 
 function showSetup() {
@@ -285,6 +397,8 @@ function tryDemo() {
 
 function handleMessage(msg) {
   if (msg.type === 'agents') {
+    lastAgentUpdate = Date.now();
+    updateConnectionLabel();
     // Track timeline on status changes
     for (const a of msg.agents) {
       const prev = prevStatuses[a.pane_id];
@@ -295,6 +409,7 @@ function handleMessage(msg) {
       prevStatuses[a.pane_id] = a.status;
     }
     agents = msg.agents; render();
+    openRequestedPane();
   }
   else if (msg.type === 'blocked') {
     const a = agents.find(x => x.pane_id === msg.pane_id);
@@ -315,60 +430,79 @@ function handleMessage(msg) {
     } else {
       el.scrollTop = el.scrollHeight;
     }
+  } else if (msg.type === 'command_result') {
+    handleCommandResult(msg);
+  } else if (msg.type === 'push_subscribed') {
+    pushRelayState = msg.ok ? 'synced' : 'rejected';
+    updatePushUI(msg.error || '');
+  } else if (msg.type === 'push_unsubscribed') {
+    pushRelayState = msg.ok ? 'removed' : 'rejected';
+    updatePushUI(msg.error || '');
+  } else if (msg.type === 'error' && pendingSubmission) {
+    failPendingSubmission(`Send rejected: ${msg.message || 'relay error'}`);
+  } else if (msg.type === 'error' && msg.request_id && pendingControls.has(msg.request_id)) {
+    finishControl(msg.request_id, false);
   }
 }
 
 function render() {
-  document.getElementById('agentCount').textContent = agents.length ? `${agents.length}` : '';
+  const query = document.getElementById('agentSearch').value.trim().toLowerCase();
+  const displayedAgents = query ? agents.filter(agent => [
+    agent.agent, agent.label, agent.project, agent.cwd, agent.workspace_id, agent.host
+  ].some(value => String(value || '').toLowerCase().includes(query))) : agents;
+  document.getElementById('agentCount').textContent = displayedAgents.length ? `${displayedAgents.length}` : '';
   // Get unique workspaces
-  const workspaces = [...new Set(agents.map(a => a.workspace_id).filter(Boolean))];
+  const workspaces = [...new Set(displayedAgents.map(a => a.workspace_id).filter(Boolean))];
   
   // If only one workspace or none have workspace_id, skip drill-down
   if (workspaces.length <= 1) {
     activeWorkspace = null;
-    renderAgentList(agents);
+    renderAgentList(displayedAgents);
     return;
   }
   
   if (activeWorkspace === null) {
-    renderWorkspaces(workspaces);
+    renderWorkspaces(workspaces, displayedAgents);
   } else {
-    const filtered = agents.filter(a => a.workspace_id === activeWorkspace);
+    const filtered = displayedAgents.filter(a => a.workspace_id === activeWorkspace);
     renderAgentList(filtered, true);
   }
 }
 
-function renderWorkspaces(workspaces) {
+function renderWorkspaces(workspaces, sourceAgents) {
   let html = '';
   // Hoist blocked agents above workspaces (collie "Needs you" pattern)
-  const blocked = agents.filter(a => a.status === 'blocked');
+  const blocked = sourceAgents.filter(a => a.status === 'blocked');
   if (blocked.length) {
     html += `<div class="section-header" style="color:var(--red)"><span class="dot" style="background:var(--red)"></span>Needs you <span style="opacity:0.6">(${blocked.length})</span></div>`;
     html += blocked.map(a => agentCard(a)).join('');
   }
   html += `<div class="section-header">Spaces <span style="opacity:0.6">(${workspaces.length})</span></div>`;
   for (const wsId of workspaces) {
-    const wsAgents = agents.filter(a => a.workspace_id === wsId);
+    const wsAgents = sourceAgents.filter(a => a.workspace_id === wsId);
     const blockedCount = wsAgents.filter(a => a.status === 'blocked').length;
     const workingCount = wsAgents.filter(a => a.status === 'working').length;
     const tabCount = new Set(wsAgents.map(a => a.tab_id).filter(Boolean)).size;
     const name = wsAgents[0]?.project || wsId.slice(0, 8);
-    html += `<div class="agent workspace-card" role="button" tabindex="0" aria-label="${name} workspace" onclick="selectWorkspace('${wsId}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectWorkspace('${wsId}')}">
+    const encodedId = encodeURIComponent(wsId).replace(/'/g, '%27');
+    html += `<div class="agent workspace-card" role="button" tabindex="0" aria-label="${h(name)} workspace" onclick="selectWorkspace(decodeURIComponent('${encodedId}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectWorkspace(decodeURIComponent('${encodedId}'))}">
       <span class="dot" style="background:${blockedCount?'var(--red)':workingCount?'var(--green)':'var(--muted)'}"></span>
       <div class="info">
-        <div class="project">${name}</div>
+        <div class="project">${h(name)}</div>
         <div class="meta"><span class="count-pill">${wsAgents.length} panes</span>${tabCount ? ` <span class="count-pill">${tabCount} tabs</span>` : ''} · ${blockedCount ? `<span style="color:var(--red)">${blockedCount} blocked</span>` : workingCount ? `<span style="color:var(--green)">${workingCount} working</span>` : 'idle'}</div>
       </div>
       <span style="color:var(--muted);font-size:1.2rem">›</span>
     </div>`;
   }
   // Show agents without workspace_id
-  const noWs = agents.filter(a => !a.workspace_id);
+  const noWs = sourceAgents.filter(a => !a.workspace_id);
   if (noWs.length) {
     html += '<div class="section-header">Other</div>';
     html += noWs.map(a => agentCard(a)).join('');
   }
-  if (!agents.length) html = '<div class="empty">Waiting for agents…</div>';
+  if (!sourceAgents.length) {
+    html = agents.length ? '<div class="empty">No sessions match this filter.</div>' : '<div class="empty">Waiting for agents…</div>';
+  }
   document.getElementById('agents').innerHTML = html;
 }
 
@@ -392,14 +526,32 @@ function renderAgentList(list, showBack) {
 function selectWorkspace(id) { activeWorkspace = id; render(); }
 function backToWorkspaces() { activeWorkspace = null; render(); }
 
+function openRequestedPane() {
+  const paneId = new URLSearchParams(location.search).get('pane');
+  if (!paneId || activePane || !agents.some(agent => agent.pane_id === paneId)) return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  openTerminal(paneId);
+}
+
+function navigateToNotification(url) {
+  const target = new URL(url, location.origin);
+  if (target.origin !== location.origin) return;
+  const paneId = target.searchParams.get('pane');
+  if (!paneId || !agents.some(agent => agent.pane_id === paneId)) return;
+  if (activePane) closeTerminal();
+  history.replaceState(null, '', location.pathname);
+  openTerminal(paneId);
+}
+
 function agentCard(a) {
   const color = a.status==='blocked'?'var(--red)':a.status==='working'?'var(--green)':'var(--muted)';
-  const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${a.host}</span>`:'';
-  const cwd = a.cwd ? `<span style="font-family:monospace;opacity:0.7">${a.cwd.split('/').slice(-2).join('/')}</span>` : '';
+  const host = a.host&&a.host!=='local'?` <span style="color:var(--orange);font-size:0.6rem">@${h(a.host)}</span>`:'';
+  const cwd = a.cwd ? `<span style="font-family:monospace;opacity:0.7">${h(a.cwd.split('/').slice(-2).join('/'))}</span>` : '';
   const label = a.label||a.project||a.agent;
-  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${label}, ${a.status}" onclick="openTerminal('${a.pane_id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTerminal('${a.pane_id}')}">
+  const encodedPaneId = encodeURIComponent(a.pane_id).replace(/'/g, '%27');
+  return `<div class="agent${a.status==='blocked'?' blocked':''}" role="button" tabindex="0" aria-label="${h(label)}, ${h(a.status)}" onclick="openTerminal(decodeURIComponent('${encodedPaneId}'))" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openTerminal(decodeURIComponent('${encodedPaneId}'))}">
     <span class="dot" style="background:${color}" aria-hidden="true"></span>
-    <div class="info"><div class="project">${label}${host}</div><div class="meta">${a.agent} · ${cwd}</div></div>
+    <div class="info"><div class="project">${h(label)}${host}</div><div class="meta">${h(a.agent)} · ${cwd}</div></div>
     <span style="color:var(--muted);font-size:1.2rem" aria-hidden="true">›</span>
   </div>`;
 }
@@ -435,6 +587,12 @@ function openTerminal(paneId) {
 
 function closeTerminal() {
   activePane = null; clearInterval(refreshInterval);
+  if (pendingSubmission) clearTimeout(pendingSubmission.timeout);
+  pendingSubmission = null;
+  for (const pending of pendingControls.values()) clearTimeout(pending.timeout);
+  pendingControls.clear();
+  setCommandStatus('');
+  document.getElementById('termSendButton').disabled = false;
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = '';
 }
@@ -442,26 +600,108 @@ function closeTerminal() {
 let paneLines = 200;
 function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:paneLines})); }
 function loadMore() { paneLines = Math.min(paneLines + 500, 5000); refreshPane(); }
-function sendText() {
-  const i=document.getElementById('termInput');
-  if(!i.value||!ws||!activePane)return;
-  ws.send(JSON.stringify({type:'send_text',pane_id:activePane,text:i.value}));
-  ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:['Enter']}));
-  i.value=''; setTimeout(refreshPane,500);
+function setCommandStatus(message, isError=false) {
+  const status = document.getElementById('commandStatus');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
 }
-function sendKey(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:[k]}));setTimeout(refreshPane,300);}
-function sendKeys(k){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'send_keys',pane_id:activePane,keys:k}));setTimeout(refreshPane,300);}
+function submitTextValue(text, clearInput=false) {
+  if(!text||!ws||ws.readyState!==WebSocket.OPEN||!activePane||pendingSubmission)return;
+  const requestId = `${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+  const timeout = setTimeout(() => failPendingSubmission('Send timed out. Your message was not cleared.'), 20000);
+  pendingSubmission = {requestId, paneId:activePane, text, clearInput, timeout};
+  document.getElementById('termSendButton').disabled = true;
+  setCommandStatus('Sending…');
+  ws.send(JSON.stringify({type:'submit_text',pane_id:activePane,text,request_id:requestId}));
+}
+function failPendingSubmission(message) {
+  if (!pendingSubmission) return;
+  clearTimeout(pendingSubmission.timeout);
+  pendingSubmission = null;
+  document.getElementById('termSendButton').disabled = false;
+  setCommandStatus(message, true);
+}
+function handleCommandResult(msg) {
+  if (pendingSubmission && msg.action === 'submit_text' && msg.request_id === pendingSubmission.requestId) {
+    const pending = pendingSubmission;
+    clearTimeout(pending.timeout);
+    pendingSubmission = null;
+    document.getElementById('termSendButton').disabled = false;
+    if (!msg.ok) {
+      setCommandStatus('Send failed. Your message was not cleared.', true);
+      return;
+    }
+    const input = document.getElementById('termInput');
+    if (pending.clearInput && input.value === pending.text) input.value = '';
+    setCommandStatus('Sent');
+    setTimeout(() => setCommandStatus(''), 1500);
+    setTimeout(refreshPane, 300);
+    return;
+  }
+  if (msg.request_id && pendingControls.has(msg.request_id)) {
+    finishControl(msg.request_id, msg.ok);
+  }
+}
+function sendText() {
+  const input=document.getElementById('termInput');
+  submitTextValue(input.value, true);
+}
+function sendControl(action, payload, label, onSuccess=null) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !activePane) return;
+  if (action === 'respond' && [...pendingControls.values()].some(pending => pending.action === 'respond')) return;
+  const requestId = `${Date.now()}_${Math.random().toString(36).slice(2,10)}`;
+  const timeout = setTimeout(() => finishControl(requestId, false, `${label} timed out.`), 20000);
+  pendingControls.set(requestId, {action, label, onSuccess, timeout});
+  if (action === 'respond') {
+    document.querySelectorAll('#quickActions button, #actionKeys button').forEach(button => { button.disabled = true; });
+  }
+  setCommandStatus(`${label}…`);
+  ws.send(JSON.stringify({type:action,pane_id:activePane,...payload,request_id:requestId}));
+}
+function finishControl(requestId, ok, failureMessage='') {
+  const pending = pendingControls.get(requestId);
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  pendingControls.delete(requestId);
+  if (pending.action === 'respond' && !ok) {
+    document.querySelectorAll('#quickActions button, #actionKeys button').forEach(button => { button.disabled = false; });
+  }
+  if (!ok) {
+    setCommandStatus(failureMessage || `${pending.label} failed.`, true);
+    return;
+  }
+  if (pending.onSuccess) pending.onSuccess();
+  setCommandStatus(`${pending.label} sent`);
+  setTimeout(() => setCommandStatus(''), 1500);
+  setTimeout(refreshPane, 300);
+}
+function failPendingControls(message) {
+  const requestIds = [...pendingControls.keys()];
+  requestIds.forEach(requestId => finishControl(requestId, false, message));
+}
+function sendKey(k){sendKeys([k]);}
+function sendKeys(keys){
+  const label = keys.includes('Ctrl+c') ? 'Interrupt' : keys.length === 1 ? `Key ${keys[0]}` : 'Keys';
+  sendControl('send_keys', {keys}, label);
+}
 function toggleArrows(){document.getElementById('arrowPopup').classList.toggle('show');}
 function hideArrows(){document.getElementById('arrowPopup').classList.remove('show');}
-function respond(t){if(!ws||!activePane)return;ws.send(JSON.stringify({type:'respond',pane_id:activePane,text:t}));document.getElementById('quickActions').innerHTML='';setTimeout(refreshPane,500);}
-document.getElementById('termInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendText();}});
+function respond(text){
+  sendControl('respond', {text}, 'Approval', () => {
+    document.getElementById('quickActions').innerHTML='';
+    document.getElementById('actionKeys').innerHTML='';
+  });
+}
+document.getElementById('termInputForm').addEventListener('submit', event => {
+  event.preventDefault();
+  sendText();
+});
+document.getElementById('agentSearch').addEventListener('input', render);
 document.getElementById('termContent').addEventListener('scroll', function() {
   const el = this;
   userScrolledUp = (el.scrollHeight - el.scrollTop - el.clientHeight) > 50;
   if (el.scrollTop === 0 && paneLines < 5000) loadMore();
 });
-
-if (savedUrl) setTimeout(connect, 100); else showSetup();
 
 // --- Command Palette ---
 const COMMANDS = {
@@ -541,10 +781,7 @@ function filterCommands() {
 
 function runCommand(cmd) {
   closePalette();
-  if (!ws || !activePane) return;
-  ws.send(JSON.stringify({type:'send_text', pane_id: activePane, text: cmd}));
-  ws.send(JSON.stringify({type:'send_keys', pane_id: activePane, keys:['Enter']}));
-  setTimeout(refreshPane, 500);
+  submitTextValue(cmd);
 }
 
 // --- Web Push ---
@@ -560,22 +797,39 @@ async function initPush() {
     const reg = await navigator.serviceWorker.register('/sw.js');
     pushSubscription = await reg.pushManager.getSubscription();
     updatePushUI();
+    syncPushSubscription();
   } catch (e) {
     document.getElementById('pushStatus').textContent = 'Service worker error: ' + e.message;
   }
 }
 
-function updatePushUI() {
+function syncPushSubscription() {
+  if (!pushSubscription || !ws || ws.readyState !== WebSocket.OPEN) return;
+  pushRelayState = 'syncing';
+  updatePushUI();
+  ws.send(JSON.stringify({type: 'push_subscribe', subscription: pushSubscription.toJSON()}));
+}
+
+function updatePushUI(error='') {
   const btn = document.getElementById('pushToggle');
   const status = document.getElementById('pushStatus');
+  const permission = 'Notification' in window ? Notification.permission : 'unsupported';
+  if (permission === 'denied') {
+    btn.textContent = 'Push blocked by browser';
+    btn.disabled = true;
+    status.textContent = 'Permission: denied · Subscription: unavailable · Relay: not synced';
+    return;
+  }
+  btn.disabled = false;
   if (pushSubscription) {
     btn.textContent = 'Disable Push';
     btn.style.background = 'var(--red)';
-    status.innerHTML = '<span style="color:var(--green)">● Enabled</span>';
+    const relayState = pushRelayState === 'synced' ? 'synced' : pushRelayState === 'rejected' ? `rejected${error ? ` (${error})` : ''}` : pushRelayState;
+    status.textContent = `Permission: ${permission} · Subscription: active · Relay: ${relayState}`;
   } else {
     btn.textContent = 'Enable Push';
     btn.style.background = 'var(--green)';
-    status.innerHTML = '<span style="color:var(--muted)">○ Disabled</span>';
+    status.textContent = `Permission: ${permission} · Subscription: none · Relay: ${pushRelayState}`;
   }
 }
 
@@ -587,13 +841,18 @@ async function togglePush() {
     }
     await pushSubscription.unsubscribe();
     pushSubscription = null;
+    pushRelayState = 'removing';
     updatePushUI();
   } else {
     // Subscribe
     try {
       const relayUrl = localStorage.getItem('herdr_relay_url') || '';
       const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
-      const resp = await fetch(httpUrl + '/api/vapid-public-key');
+      const relayToken = localStorage.getItem('herdr_relay_token') || '';
+      const resp = await fetch(httpUrl + '/api/vapid-public-key', {
+        headers: relayToken ? {'Authorization': `Bearer ${relayToken}`} : {}
+      });
+      if (!resp.ok) throw new Error(`Relay returned HTTP ${resp.status}`);
       const {publicKey} = await resp.json();
       if (!publicKey) {
         document.getElementById('pushStatus').textContent = 'VAPID key not configured on relay';
@@ -605,6 +864,7 @@ async function togglePush() {
         applicationServerKey: urlBase64ToUint8Array(publicKey)
       });
       if (ws && ws.readyState === 1) {
+        pushRelayState = 'syncing';
         ws.send(JSON.stringify({type: 'push_subscribe', subscription: pushSubscription.toJSON()}));
       }
       updatePushUI();
@@ -612,6 +872,85 @@ async function togglePush() {
       document.getElementById('pushStatus').textContent = 'Error: ' + e.message;
     }
   }
+}
+
+async function testPush() {
+  const status = document.getElementById('pushStatus');
+  const relayUrl = localStorage.getItem('herdr_relay_url') || autoRelayUrl;
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  const token = localStorage.getItem('herdr_relay_token') || '';
+  status.textContent = 'Sending test notification…';
+  try {
+    const response = await fetch(httpUrl + '/api/push/test', {
+      headers: token ? {'Authorization': `Bearer ${token}`} : {}
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    status.textContent = result.attempted === 0
+      ? 'No push subscriptions. Enable Push on this device first.'
+      : `Test sent to ${result.sent}/${result.attempted} subscription(s).`;
+    await refreshHealth();
+  } catch (error) {
+    status.textContent = `Test failed: ${error.message}`;
+  }
+}
+
+async function refreshDevices() {
+  const list = document.getElementById('devicesList');
+  const relayUrl = localStorage.getItem('herdr_relay_url') || autoRelayUrl;
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  const token = localStorage.getItem('herdr_relay_token') || '';
+  try {
+    const response = await fetch(httpUrl + '/api/devices', {
+      headers: token ? {'Authorization': `Bearer ${token}`} : {}
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    list.replaceChildren();
+    if (!data.devices.length) {
+      list.textContent = 'No paired devices.';
+      return;
+    }
+    for (const device of data.devices) {
+      const row = document.createElement('div');
+      row.className = 'device-row';
+      const info = document.createElement('div');
+      info.className = 'device-info';
+      const name = document.createElement('div');
+      name.className = 'device-name';
+      name.textContent = device.name || 'Browser';
+      const meta = document.createElement('div');
+      meta.className = 'device-meta';
+      const created = device.createdAt ? new Date(device.createdAt * 1000).toLocaleString() : 'unknown date';
+      meta.textContent = `${created} · ${(device.scopes || []).join(', ')}`;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = 'Revoke';
+      button.setAttribute('aria-label', `Revoke ${device.name || 'device'}`);
+      button.addEventListener('click', () => revokeDevice(device.id, device.name || 'this device'));
+      info.append(name, meta);
+      row.append(info, button);
+      list.append(row);
+    }
+  } catch (error) {
+    list.textContent = `Device list unavailable: ${error.message}`;
+  }
+}
+
+async function revokeDevice(deviceId, deviceName) {
+  if (!confirm(`Revoke ${deviceName}? It will be disconnected immediately.`)) return;
+  const relayUrl = localStorage.getItem('herdr_relay_url') || autoRelayUrl;
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  const token = localStorage.getItem('herdr_relay_token') || '';
+  const response = await fetch(`${httpUrl}/api/devices/revoke?id=${encodeURIComponent(deviceId)}`, {
+    headers: token ? {'Authorization': `Bearer ${token}`} : {}
+  });
+  const result = await response.json();
+  if (!response.ok || !result.revoked) {
+    alert(result.error || 'Device could not be revoked.');
+    return;
+  }
+  await refreshHealth();
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -624,6 +963,91 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 initPush();
+setInterval(updateConnectionLabel, 2000);
+navigator.serviceWorker?.addEventListener('message', event => {
+  if (event.data?.type === 'navigate') navigateToNotification(event.data.url);
+});
+window.addEventListener('offline', () => setStatus('offline'));
+window.addEventListener('online', () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) connect();
+});
+
+// --- Secure pairing + PWA installation ---
+async function createPairing() {
+  const result = document.getElementById('pairingResult');
+  const token = localStorage.getItem('herdr_relay_token') || '';
+  const relayUrl = localStorage.getItem('herdr_relay_url') || autoRelayUrl;
+  const httpUrl = relayUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  result.classList.add('active');
+  document.getElementById('pairingCode').textContent = 'Creating…';
+  document.getElementById('pairingQr').removeAttribute('src');
+  try {
+    const response = await fetch(httpUrl + '/api/pair/start', {
+      headers: token ? {'Authorization': `Bearer ${token}`} : {}
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    document.getElementById('pairingQr').src = data.qr;
+    document.getElementById('pairingCode').textContent = data.code;
+    document.getElementById('pairingExpiry').textContent = `Expires in ${data.expiresIn} seconds`;
+  } catch (error) {
+    document.getElementById('pairingCode').textContent = 'Pairing failed';
+    document.getElementById('pairingExpiry').textContent = error.message;
+  }
+}
+
+async function consumePairingFragment() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const code = params.get('pair');
+  if (!code) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  showSetup();
+  document.getElementById('agents').innerHTML = '<div class="empty">Pairing this device…</div>';
+  const name = `${navigator.platform || 'Browser'} · ${navigator.userAgent.includes('Android') ? 'Android' : 'Web'}`;
+  try {
+    const response = await fetch(`/api/pair/exchange?code=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    localStorage.setItem('herdr_relay_url', autoRelayUrl);
+    localStorage.setItem('herdr_relay_token', data.token);
+    document.getElementById('relayUrl').value = autoRelayUrl;
+    document.getElementById('relayToken').value = data.token;
+    connect();
+    return true;
+  } catch (error) {
+    document.getElementById('agents').innerHTML = `<div class="empty"><strong>Pairing failed</strong><br>${h(error.message)}</div>`;
+    return true;
+  }
+}
+
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPrompt = event;
+  document.getElementById('installBanner').classList.add('active');
+  document.getElementById('installHeaderButton').style.display = '';
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  document.getElementById('installBanner').classList.remove('active');
+  document.getElementById('installHeaderButton').style.display = 'none';
+});
+async function installPwa() {
+  if (!installPrompt) return;
+  await installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+}
+
+async function startApp() {
+  const pairingHandled = await consumePairingFragment();
+  if (!pairingHandled) {
+    const relayUrl = localStorage.getItem('herdr_relay_url') || savedUrl;
+    if (relayUrl) setTimeout(connect, 100); else showSetup();
+  }
+}
+
+startApp();
 </script>
 </body>
 </html>
