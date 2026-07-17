@@ -140,9 +140,14 @@ secure proxy to be online.
 
 Push Settings reports three independent states: browser permission, local Push
 subscription, and relay synchronization. Tapping a notification opens its Herdr
-pane even when the installed PWA is already running. If an update is not visible,
-fully close and reopen the PWA once so the network-first shell can activate the
-new service worker.
+pane even when the installed PWA is already running. Notifications are sent when
+an agent needs approval and when a working agent finishes and becomes idle.
+
+The terminal action bar provides direct **Enter**, **Up**, and **Down** keys for
+interactive agent menus. On Android, the installed app requests portrait mode;
+if the browser ignores that request, open Settings and select **Lock portrait**.
+If an update is not visible, fully close and reopen the PWA once so the
+network-first shell can activate the new service worker.
 
 ## 6. Keep WSL running
 

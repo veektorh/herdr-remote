@@ -65,6 +65,8 @@ class RelaySecurityTests(unittest.TestCase):
     def test_command_and_line_validation(self):
         message = validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["Ctrl+c"]})
         self.assertEqual(message["keys"], ["C-c"])
+        arrows = validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["Up", "Down", "Enter"]})
+        self.assertEqual(arrows["keys"], ["Up", "Down", "Enter"])
         with self.assertRaises(ValidationError):
             validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["F12"]})
         with self.assertRaises(ValidationError):

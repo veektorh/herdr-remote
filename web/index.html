@@ -18,6 +18,7 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 *:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+html, body { overscroll-behavior-y: none; }
 body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100dvh; display: flex; flex-direction: column; }
 
 .header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
@@ -31,6 +32,9 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .settings { display: none; padding: 16px; }
 .settings.active { display: block; }
 .settings h2 { font-size: 0.9rem; margin-bottom: 12px; }
+.settings-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.settings-header h2 { margin: 0; }
+.settings-back { border: 0; border-radius: 7px; padding: 9px 12px; background: var(--surface); color: var(--blue); font-weight: 600; cursor: pointer; }
 .setting-group { background: var(--surface); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
 .setting-group label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 6px; }
 .setting-group input { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; }
@@ -71,13 +75,13 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .agent .meta { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
 
 /* Terminal view */
-.terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: 49px; background: var(--bg); z-index: 50; }
+.terminal-view { display: none; flex-direction: column; position: fixed; inset: 0; top: 49px; min-height: 0; overflow: hidden; background: var(--bg); z-index: 50; }
 .terminal-view.active { display: flex; }
 .term-header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .term-header .back { background: none; border: none; color: var(--blue); font-size: 1.4rem; cursor: pointer; padding: 4px 8px; }
 .term-header .title { flex: 1; font-size: 0.8rem; font-weight: 500; }
 .term-header .refresh-btn { background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
-.term-content { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: color-mix(in srgb, var(--bg) 90%, black); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; color: var(--text); -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.term-content { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 12px; background: color-mix(in srgb, var(--bg) 90%, black); font-family: 'SF Mono', 'Menlo', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; word-break: break-all; color: var(--text); -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; }
 .quick-actions { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
 .quick-actions button { padding: 10px 14px; border-radius: 8px; border: none; font-size: 0.75rem; font-weight: 600; cursor: pointer; flex: 1; min-width: 70px; }
 .quick-actions button:disabled, #actionKeys button:disabled { opacity: 0.55; cursor: wait; }
@@ -132,7 +136,10 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 </div>
 
 <div class="settings" id="settingsView">
-  <h2>Settings</h2>
+  <div class="settings-header">
+    <button class="settings-back" onclick="showWorkspaces()" aria-label="Back to workspaces">‹ Workspaces</button>
+    <h2>Settings</h2>
+  </div>
   <div class="setting-group" id="pairingGroup">
     <label>Pair another device</label>
     <button onclick="createPairing()">Create 2-minute pairing code</button>
@@ -157,7 +164,13 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <div id="pushStatus" style="font-size:0.75rem;margin-bottom:6px"></div>
     <button id="pushToggle" onclick="togglePush()">Enable Push</button>
     <button id="pushTest" onclick="testPush()">Test notification</button>
-    <div class="hint">Get notified when agents are blocked, even with this tab closed.</div>
+    <div class="hint">Get notified when agents need approval or finish, even with this app closed.</div>
+  </div>
+  <div class="setting-group">
+    <label>Screen orientation</label>
+    <div id="orientationStatus" style="font-size:0.75rem;margin-bottom:6px" role="status" aria-live="polite">Portrait requested automatically</div>
+    <button onclick="lockPortraitFromGesture()">Lock portrait</button>
+    <div class="hint">Uses fullscreen mode so Android permits a persistent orientation lock.</div>
   </div>
   <div class="setting-group" id="devicesGroup" style="display:none">
     <label>Paired devices</label>
@@ -201,6 +214,9 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   </form>
   <div class="command-status" id="commandStatus" role="status" aria-live="polite"></div>
   <div class="term-keys">
+    <button class="key-green" onclick="sendKey('Enter')" aria-label="Press Enter">↵ Enter</button>
+    <button onclick="sendKey('Up')" aria-label="Move selection up">↑ Up</button>
+    <button onclick="sendKey('Down')" aria-label="Move selection down">↓ Down</button>
     <button onclick="sendKey('Tab')">⇥</button>
     <button onclick="sendKey('Escape')">Esc</button>
     <button onclick="sendKeys(['Ctrl+c'])">^C</button>
@@ -257,6 +273,7 @@ document.getElementById('relayToken').value = savedToken;
 function toggleSettings() {
   const s = document.getElementById('settingsView');
   const show = s.style.display !== 'block';
+  if (show && activePane) closeTerminal();
   s.style.display = show ? 'block' : 'none';
   document.getElementById('agentListView').style.display = show ? 'none' : '';
   document.getElementById('timelineView').style.display = 'none';
@@ -265,9 +282,16 @@ function toggleSettings() {
   }
 }
 
+function showWorkspaces() {
+  document.getElementById('settingsView').style.display = 'none';
+  document.getElementById('timelineView').style.display = 'none';
+  document.getElementById('agentListView').style.display = '';
+}
+
 function toggleTimeline() {
   const t = document.getElementById('timelineView');
   const show = t.style.display !== 'block';
+  if (show && activePane) closeTerminal();
   t.style.display = show ? 'block' : 'none';
   document.getElementById('agentListView').style.display = show ? 'none' : '';
   document.getElementById('settingsView').style.display = 'none';
@@ -410,6 +434,21 @@ function handleMessage(msg) {
     }
     agents = msg.agents; render();
     openRequestedPane();
+  }
+  else if (msg.type === 'agent_update') {
+    const update = msg.agent;
+    const index = agents.findIndex(a => a.pane_id === update?.pane_id);
+    if (index === -1) return; // The next complete poll will add new panes with workspace metadata.
+    const previous = agents[index];
+    if (update.status && previous.status !== update.status) {
+      timeline.unshift({project: update.project || previous.project, agent: update.agent || previous.agent, status: update.status, time: new Date()});
+      if (timeline.length > 100) timeline.pop();
+    }
+    agents[index] = {...previous, ...update};
+    if (update.status) prevStatuses[update.pane_id] = update.status;
+    lastAgentUpdate = Date.now();
+    updateConnectionLabel();
+    render();
   }
   else if (msg.type === 'blocked') {
     const a = agents.find(x => x.pane_id === msg.pane_id);
@@ -1031,6 +1070,7 @@ window.addEventListener('appinstalled', () => {
   installPrompt = null;
   document.getElementById('installBanner').classList.remove('active');
   document.getElementById('installHeaderButton').style.display = 'none';
+  lockPortraitOrientation();
 });
 async function installPwa() {
   if (!installPrompt) return;
@@ -1039,7 +1079,41 @@ async function installPwa() {
   installPrompt = null;
 }
 
+async function lockPortraitOrientation() {
+  if (!screen.orientation?.lock) return false;
+  try {
+    await screen.orientation.lock('portrait');
+    return true;
+  } catch (error) {
+    // The manifest still requests portrait; some browsers reject runtime locking.
+    return false;
+  }
+}
+
+async function lockPortraitFromGesture() {
+  const status = document.getElementById('orientationStatus');
+  status.textContent = 'Requesting portrait lock…';
+  try {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen({navigationUI: 'hide'});
+    }
+    const locked = await lockPortraitOrientation();
+    status.textContent = locked ? 'Portrait locked' : 'Android rejected the orientation lock';
+  } catch (error) {
+    status.textContent = `Lock failed: ${error.name || 'unsupported'}`;
+  }
+}
+
+window.addEventListener('focus', lockPortraitOrientation);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') lockPortraitOrientation();
+});
+screen.orientation?.addEventListener('change', () => {
+  if (screen.orientation.type.startsWith('landscape')) lockPortraitOrientation();
+});
+
 async function startApp() {
+  await lockPortraitOrientation();
   const pairingHandled = await consumePairingFragment();
   if (!pairingHandled) {
     const relayUrl = localStorage.getItem('herdr_relay_url') || savedUrl;

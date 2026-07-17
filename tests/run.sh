@@ -86,7 +86,20 @@ python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   grep -q 'herdr-auth.' "$WEB" && \
   grep -q "type:'submit_text'" "$WEB" && \
   grep -q "msg.type === 'command_result'" "$WEB" && \
-  grep -q 'enterkeyhint="send"' "$WEB"
+  grep -q 'enterkeyhint="send"' "$WEB" && \
+  grep -q '"orientation": "portrait"' "$DIR/web/manifest.webmanifest" && \
+  grep -q "msg.type === 'agent_update'" "$WEB" && \
+  grep -q "screen.orientation.lock('portrait')" "$WEB" && \
+  grep -q 'overscroll-behavior-y: none' "$WEB" && \
+  grep -q 'aria-label="Back to workspaces"' "$WEB" && \
+  grep -q 'lockPortraitFromGesture' "$WEB" && \
+  grep -q 'requestFullscreen' "$WEB" && \
+  grep -q 'aria-label="Press Enter"' "$WEB" && \
+  grep -q 'touch-action: pan-y' "$WEB" && \
+  grep -q 'min-height: 0; overflow-y: auto' "$WEB" && \
+  grep -q 'aria-label="Move selection up"' "$WEB" && \
+  grep -q 'aria-label="Move selection down"' "$WEB" && \
+  grep -q 'if (show && activePane) closeTerminal()' "$WEB"
 assert_eq "$?" "0" "installable PWA and subprotocol auth present"
 
 # --- macOS app ---

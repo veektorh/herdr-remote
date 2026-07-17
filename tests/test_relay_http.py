@@ -213,6 +213,34 @@ class RelayHttpTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.call(Request(path=path)).status_code, 200)
 
+    def test_plugin_event_is_a_partial_agent_update(self):
+        update = self.relay.build_agent_update({
+            "type": "agent_event", "pane_id": "w1:t1:p1", "agent": "codex",
+            "status": "working", "project": "remote", "cwd": "/work/remote",
+        })
+        self.assertEqual(update["type"], "agent_update")
+        self.assertEqual(update["agent"]["pane_id"], "w1:t1:p1")
+        self.assertNotIn("agents", update)
+
+    def test_completion_notifications_match_herdr_status_transitions(self):
+        for previous, current in (("working", "idle"), ("working", "done"), ("blocked", "idle")):
+            with self.subTest(previous=previous, current=current):
+                self.assertTrue(self.relay.is_completion_transition(previous, current))
+        for previous, current in ((None, "idle"), ("idle", "idle"), ("blocked", "working")):
+            with self.subTest(previous=previous, current=current):
+                self.assertFalse(self.relay.is_completion_transition(previous, current))
+
+    def test_failed_poll_keeps_last_successful_agent_count(self):
+        original_count = self.relay.last_agent_count
+        self.relay.last_agent_count = 3
+        try:
+            with patch.object(self.relay, "query_agents_from_host", return_value=(False, [])):
+                self.assertEqual(self.relay.get_all_agents(), [])
+            self.assertFalse(self.relay.last_poll_ok)
+            self.assertEqual(self.relay.last_agent_count, 3)
+        finally:
+            self.relay.last_agent_count = original_count
+
     def test_runtime_state_files_are_private(self):
         self.relay._save_push_subs()
         for path in (self.relay.LOG_FILE, self.relay.AUDIT_FILE, self.relay.PUSH_SUBS_FILE):

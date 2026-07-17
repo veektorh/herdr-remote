@@ -1,5 +1,5 @@
 // herdr-remote service worker — offline shell + Web Push notifications
-const CACHE_NAME = 'herdr-shell-v3';
+const CACHE_NAME = 'herdr-shell-v12';
 const SHELL_ASSETS = [
   '/', '/index.html', '/manifest.webmanifest', '/logo.svg',
   '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png'
@@ -65,7 +65,7 @@ self.addEventListener('push', (event) => {
       body: data.body,
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      tag: 'herdr-blocked',
+      tag: data.tag || 'herdr-status',
       renotify: true,
       data: { url: data.url },
     })

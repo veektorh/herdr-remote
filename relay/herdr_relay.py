@@ -224,7 +224,9 @@ def _remove_device_push_subscriptions(device_id: str) -> int:
     return removed
 
 
-async def send_web_push(title: str, body: str, url: str = "/", clear: bool = False):
+async def send_web_push(
+    title: str, body: str, url: str = "/", clear: bool = False, tag: str = "herdr-status"
+):
     """Send push notification to all registered subscriptions.
     
     Uses collapse topic + TTL so offline devices get only the latest.
@@ -242,7 +244,7 @@ async def send_web_push(title: str, body: str, url: str = "/", clear: bool = Fal
     if clear:
         payload = json.dumps({"type": "clear", "tag": "herdr-blocked"})
     else:
-        payload = json.dumps({"title": title, "body": body, "url": url})
+        payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
     headers = {"Topic": "herdr-herd", "TTL": "21600"}  # 6h TTL, collapse key
     dead = []
     for i, record in enumerate(push_subscriptions):
@@ -355,7 +357,8 @@ def get_all_agents():
         agents.extend(remote_agents)
     last_poll_at = time.time()
     last_poll_ok = all(poll_results)
-    last_agent_count = len(agents)
+    if last_poll_ok:
+        last_agent_count = len(agents)
     return agents
 
 
@@ -389,17 +392,33 @@ async def broadcast(msg):
     clients.difference_update(dead)
 
 
+def is_completion_transition(previous_status, current_status):
+    return previous_status in {"working", "blocked"} and current_status in {"idle", "done"}
+
+
 async def poll_loop():
+    poll_failure_reported = False
     while True:
         agents = get_all_agents()
-        # Always broadcast (even empty list) so clients stay in sync
+        if not last_poll_ok:
+            if not poll_failure_reported:
+                log.warning("Herdr pane poll failed; retaining the last valid agent list")
+                poll_failure_reported = True
+            await asyncio.sleep(POLL_INTERVAL)
+            continue
+        if poll_failure_reported:
+            log.info("Herdr pane poll recovered")
+            poll_failure_reported = False
+
+        # A successful empty list is valid and must still clear disconnected panes.
         for a in agents:
             pane_remote_map[a["pane_id"]] = a.get("remote")
             known_panes.add(a["pane_id"])
         await broadcast({"type": "agents", "agents": agents})
         for a in agents:
             pid, status = a["pane_id"], a["status"]
-            if status == "blocked" and last_statuses.get(pid) != "blocked":
+            previous_status = last_statuses.get(pid)
+            if status == "blocked" and previous_status != "blocked":
                 content = read_pane(pid, remote=a.get("remote"))
                 options = detect_options(content)
                 await broadcast({
@@ -414,9 +433,16 @@ async def poll_loop():
                     title=f"🐑 {a['project']} blocked",
                     body=content[:120],
                     url=f"/?pane={urllib.parse.quote(pid, safe='')}",
+                    tag="herdr-blocked",
                 )
-            # Send clear push when agent unblocks
-            if status != "blocked" and last_statuses.get(pid) == "blocked":
+            if is_completion_transition(previous_status, status):
+                await send_web_push(
+                    title=f"✅ {a['project']} finished",
+                    body=f"{a['agent']} is ready for your review.",
+                    url=f"/?pane={urllib.parse.quote(pid, safe='')}",
+                    tag="herdr-complete",
+                )
+            elif status != "blocked" and previous_status == "blocked":
                 await send_web_push("", "", clear=True)
             last_statuses[pid] = status
         # Clean up panes that are no longer reported
@@ -428,6 +454,20 @@ async def poll_loop():
                 pane_remote_map.pop(pid, None)
                 last_statuses.pop(pid, None)
         await asyncio.sleep(POLL_INTERVAL)
+
+
+def build_agent_update(event):
+    pane_id = event.get("pane_id", "")
+    if not pane_id or event.get("type") != "agent_event":
+        return None
+    agent = {"pane_id": pane_id}
+    for field in ("agent", "status", "cwd", "project", "host"):
+        if event.get(field):
+            agent[field] = event[field]
+    return {
+        "type": "agent_update",
+        "agent": agent,
+    }
 
 
 async def event_push():
@@ -453,17 +493,9 @@ async def event_push():
                 "options": options or TOOL_OPTIONS
             })
 
-        if pane_id and event.get("type") == "agent_event":
-            await broadcast({
-                "type": "agents", "agents": [{
-                    "pane_id": pane_id,
-                    "agent": event.get("agent", ""),
-                    "status": status,
-                    "cwd": event.get("cwd", ""),
-                    "project": event.get("project", ""),
-                    "host": host,
-                }]
-            })
+        update = build_agent_update(event)
+        if update:
+            await broadcast(update)
 
 
 async def process_request(connection, request):
