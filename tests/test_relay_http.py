@@ -230,6 +230,31 @@ class RelayHttpTests(unittest.TestCase):
             with self.subTest(previous=previous, current=current):
                 self.assertFalse(self.relay.is_completion_transition(previous, current))
 
+    def test_quiet_mode_persists_without_removing_subscription(self):
+        subscription = {
+            "endpoint": "https://push.example/device",
+            "keys": {"p256dh": "public", "auth": "secret"},
+        }
+        original = list(self.relay.push_subscriptions)
+        self.relay.push_subscriptions[:] = [{
+            "deviceId": "device-1", "subscription": subscription, "muted": False,
+        }]
+        try:
+            with patch.object(self.relay, "_save_push_subs") as save:
+                self.assertTrue(self.relay._set_push_subscription_muted(
+                    subscription, True, "device-1"
+                ))
+            save.assert_called_once_with()
+            self.assertEqual(len(self.relay.push_subscriptions), 1)
+            self.assertTrue(self.relay._push_subscription_muted(
+                self.relay.push_subscriptions[0]
+            ))
+            self.assertFalse(self.relay._set_push_subscription_muted(
+                subscription, False, "another-device"
+            ))
+        finally:
+            self.relay.push_subscriptions[:] = original
+
     def test_failed_poll_keeps_last_successful_agent_count(self):
         original_count = self.relay.last_agent_count
         self.relay.last_agent_count = 3

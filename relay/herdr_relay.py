@@ -212,6 +212,31 @@ def _push_subscription(record):
     return record
 
 
+def _push_subscription_muted(record) -> bool:
+    return bool(
+        isinstance(record, dict)
+        and isinstance(record.get("subscription"), dict)
+        and record.get("muted")
+    )
+
+
+def _set_push_subscription_muted(subscription, muted: bool, device_id: str = "") -> bool:
+    for index, record in enumerate(push_subscriptions):
+        if _push_subscription(record) != subscription:
+            continue
+        record_device_id = record.get("deviceId", "") if isinstance(record, dict) else ""
+        if device_id and record_device_id and record_device_id != device_id:
+            continue
+        push_subscriptions[index] = {
+            "deviceId": record_device_id or device_id,
+            "subscription": subscription,
+            "muted": muted,
+        }
+        _save_push_subs()
+        return True
+    return False
+
+
 def _remove_device_push_subscriptions(device_id: str) -> int:
     retained = [
         record for record in push_subscriptions
@@ -232,14 +257,21 @@ async def send_web_push(
     Uses collapse topic + TTL so offline devices get only the latest.
     If clear=True, sends a clear instruction instead of showing a notification.
     """
-    result = {"attempted": len(push_subscriptions), "sent": 0, "failed": 0, "removed": 0}
+    muted_count = sum(_push_subscription_muted(record) for record in push_subscriptions)
+    result = {
+        "attempted": len(push_subscriptions) - muted_count,
+        "muted": muted_count,
+        "sent": 0,
+        "failed": 0,
+        "removed": 0,
+    }
     if not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
         return result
     try:
         from pywebpush import webpush, WebPushException
     except ImportError:
         log.warning("pywebpush not installed, skipping push")
-        result["failed"] = len(push_subscriptions)
+        result["failed"] = result["attempted"]
         return result
     if clear:
         payload = json.dumps({"type": "clear", "tag": "herdr-blocked"})
@@ -248,6 +280,8 @@ async def send_web_push(
     headers = {"Topic": "herdr-herd", "TTL": "21600"}  # 6h TTL, collapse key
     dead = []
     for i, record in enumerate(push_subscriptions):
+        if _push_subscription_muted(record):
+            continue
         sub = _push_subscription(record)
         try:
             webpush(
@@ -600,6 +634,7 @@ async def process_request(connection, request):
         request_host = host.split(":", 1)[0].strip("[]").lower()
         push_configured = bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY)
         push_count = len(push_subscriptions)
+        quiet_push_count = sum(_push_subscription_muted(record) for record in push_subscriptions)
         poll_age = round(time.time() - last_poll_at, 1) if last_poll_at else None
         return _json_response(200, "OK", {
             "relay": "ok",
@@ -613,6 +648,7 @@ async def process_request(connection, request):
                 "not-configured"
             ),
             "pushSubscriptions": push_count,
+            "quietPushSubscriptions": quiet_push_count,
             "pairedDevices": len(pairing.list_devices()),
             "herdrPoll": (
                 "not-yet-polled" if last_poll_ok is None else
@@ -740,7 +776,7 @@ async def handle_client(ws):
                 "respond": "control", "send_keys": "control", "send_text": "control",
                 "submit_text": "control",
                 "read_pane": "read", "agent_event": "events",
-                "push_subscribe": "push", "push_unsubscribe": "push",
+                "push_subscribe": "push", "push_unsubscribe": "push", "push_quiet": "push",
             }[msg_type]
             if not auth or not auth.allows(required_scope):
                 if msg_type in {"respond", "send_keys", "send_text", "submit_text"}:
@@ -834,14 +870,17 @@ async def handle_client(ws):
                 sub = msg.get("subscription")
                 existing = False
                 migrated = False
+                muted = False
                 for index, record in enumerate(push_subscriptions):
                     if _push_subscription(record) != sub:
                         continue
                     existing = True
+                    muted = _push_subscription_muted(record)
                     if auth.device_id and not record.get("deviceId"):
                         push_subscriptions[index] = {
                             "deviceId": auth.device_id,
                             "subscription": sub,
+                            "muted": muted,
                         }
                         migrated = True
                     break
@@ -855,12 +894,15 @@ async def handle_client(ws):
                     push_subscriptions.append({
                         "deviceId": auth.device_id,
                         "subscription": sub,
+                        "muted": False,
                     })
                     migrated = True
                 if migrated:
                     _save_push_subs()
                     log.info("Push subscription added from %s (%s)", ip, device)
-                await ws.send(json.dumps({"type": "push_subscribed", "ok": True}))
+                await ws.send(json.dumps({
+                    "type": "push_subscribed", "ok": True, "quiet": muted,
+                }))
             elif msg_type == "push_unsubscribe":
                 sub = msg.get("subscription")
                 retained = [record for record in push_subscriptions if _push_subscription(record) != sub]
@@ -868,6 +910,18 @@ async def handle_client(ws):
                     push_subscriptions[:] = retained
                     _save_push_subs()
                 await ws.send(json.dumps({"type": "push_unsubscribed", "ok": True}))
+            elif msg_type == "push_quiet":
+                quiet = msg["quiet"]
+                updated = _set_push_subscription_muted(
+                    msg["subscription"], quiet, auth.device_id
+                )
+                if updated:
+                    log.info("Push quiet mode set to %s from %s (%s)", quiet, ip, device)
+                    audit("push_quiet", ip, device, "", f"quiet={quiet}")
+                await ws.send(json.dumps({
+                    "type": "push_quiet", "ok": updated, "quiet": quiet,
+                    "error": "subscription not found" if not updated else "",
+                }))
     except (ConnectionClosedError, ConnectionClosedOK):
         pass
     finally:

@@ -26,7 +26,7 @@ SAFE_KEYS = {
 KEY_ALIASES = {"Ctrl+c": "C-c", "Ctrl+C": "C-c"}
 MESSAGE_TYPES = {
     "respond", "agent_event", "read_pane", "send_keys", "send_text", "submit_text",
-    "push_subscribe", "push_unsubscribe",
+    "push_subscribe", "push_unsubscribe", "push_quiet",
 }
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -189,4 +189,9 @@ def validate_message(message) -> dict:
         if not isinstance(keys, dict) or not all(isinstance(keys.get(k), str) for k in ("p256dh", "auth")):
             raise ValidationError("subscription keys are invalid")
         clean["subscription"] = subscription
+        if message_type == "push_quiet":
+            quiet = message.get("quiet")
+            if not isinstance(quiet, bool):
+                raise ValidationError("quiet must be a boolean")
+            clean["quiet"] = quiet
     return clean

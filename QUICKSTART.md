@@ -142,6 +142,9 @@ Push Settings reports three independent states: browser permission, local Push
 subscription, and relay synchronization. Tapping a notification opens its Herdr
 pane even when the installed PWA is already running. Notifications are sent when
 an agent needs approval and when a working agent finishes and becomes idle.
+Use **Quiet notifications** while at your desk to suppress delivery without
+removing the device's push subscription; select **Resume notifications** when
+you want alerts again. Quiet mode persists across reconnects and relay restarts.
 
 The terminal action bar provides direct **Enter**, **Up**, and **Down** keys for
 interactive agent menus. On Android, the installed app requests portrait mode;

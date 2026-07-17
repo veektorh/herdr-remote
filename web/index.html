@@ -163,6 +163,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <label>Push Notifications</label>
     <div id="pushStatus" style="font-size:0.75rem;margin-bottom:6px"></div>
     <button id="pushToggle" onclick="togglePush()">Enable Push</button>
+    <button id="pushQuiet" onclick="togglePushQuiet()" disabled>Quiet notifications</button>
     <button id="pushTest" onclick="testPush()">Test notification</button>
     <div class="hint">Get notified when agents need approval or finish, even with this app closed.</div>
   </div>
@@ -257,6 +258,7 @@ let pendingSubmission = null;
 const pendingControls = new Map();
 let connectionState = 'disconnected', lastAgentUpdate = 0, reconnectTimer = null;
 let pushRelayState = 'not-synced';
+let pushQuiet = false, pushQuietPending = false;
 
 // Settings — auto-detect relay when served from same origin
 const autoRelayUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
@@ -389,7 +391,8 @@ async function refreshHealth() {
       ['Credential', health.credentialRole], ['Proxy', health.proxy], ['Push', health.push],
       ['Herdr poll', health.herdrPoll], ['Last poll', health.lastPollSeconds == null ? 'not yet' : `${health.lastPollSeconds}s ago`],
       ['Agents', health.agents], ['Clients', `${health.clients}/${health.maxClients}`],
-      ['Push subscriptions', health.pushSubscriptions], ['Paired devices', health.pairedDevices]
+      ['Push subscriptions', health.pushSubscriptions], ['Quiet subscriptions', health.quietPushSubscriptions],
+      ['Paired devices', health.pairedDevices]
     ].map(([label, value]) => `<div><strong>${h(label)}:</strong> ${h(value)}</div>`).join('');
     document.getElementById('pairingGroup').style.display = health.canPair ? '' : 'none';
     document.getElementById('devicesGroup').style.display = health.canPair ? '' : 'none';
@@ -473,9 +476,17 @@ function handleMessage(msg) {
     handleCommandResult(msg);
   } else if (msg.type === 'push_subscribed') {
     pushRelayState = msg.ok ? 'synced' : 'rejected';
+    if (msg.ok) pushQuiet = Boolean(msg.quiet);
+    pushQuietPending = false;
     updatePushUI(msg.error || '');
   } else if (msg.type === 'push_unsubscribed') {
     pushRelayState = msg.ok ? 'removed' : 'rejected';
+    pushQuiet = false;
+    pushQuietPending = false;
+    updatePushUI(msg.error || '');
+  } else if (msg.type === 'push_quiet') {
+    pushQuietPending = false;
+    if (msg.ok) pushQuiet = Boolean(msg.quiet);
     updatePushUI(msg.error || '');
   } else if (msg.type === 'error' && pendingSubmission) {
     failPendingSubmission(`Send rejected: ${msg.message || 'relay error'}`);
@@ -851,11 +862,13 @@ function syncPushSubscription() {
 
 function updatePushUI(error='') {
   const btn = document.getElementById('pushToggle');
+  const quietBtn = document.getElementById('pushQuiet');
   const status = document.getElementById('pushStatus');
   const permission = 'Notification' in window ? Notification.permission : 'unsupported';
   if (permission === 'denied') {
     btn.textContent = 'Push blocked by browser';
     btn.disabled = true;
+    quietBtn.disabled = true;
     status.textContent = 'Permission: denied · Subscription: unavailable · Relay: not synced';
     return;
   }
@@ -864,12 +877,28 @@ function updatePushUI(error='') {
     btn.textContent = 'Disable Push';
     btn.style.background = 'var(--red)';
     const relayState = pushRelayState === 'synced' ? 'synced' : pushRelayState === 'rejected' ? `rejected${error ? ` (${error})` : ''}` : pushRelayState;
-    status.textContent = `Permission: ${permission} · Subscription: active · Relay: ${relayState}`;
+    quietBtn.disabled = pushRelayState !== 'synced' || pushQuietPending;
+    quietBtn.textContent = pushQuiet ? 'Resume notifications' : 'Quiet notifications';
+    quietBtn.style.background = pushQuiet ? 'var(--green)' : 'var(--orange)';
+    status.textContent = `Permission: ${permission} · Subscription: active · Relay: ${relayState} · Quiet: ${pushQuiet ? 'on' : 'off'}`;
   } else {
     btn.textContent = 'Enable Push';
     btn.style.background = 'var(--green)';
+    quietBtn.disabled = true;
+    quietBtn.textContent = 'Quiet notifications';
     status.textContent = `Permission: ${permission} · Subscription: none · Relay: ${pushRelayState}`;
   }
+}
+
+function togglePushQuiet() {
+  if (!pushSubscription || !ws || ws.readyState !== WebSocket.OPEN || pushQuietPending) return;
+  pushQuietPending = true;
+  updatePushUI();
+  ws.send(JSON.stringify({
+    type: 'push_quiet',
+    subscription: pushSubscription.toJSON(),
+    quiet: !pushQuiet,
+  }));
 }
 
 async function togglePush() {
@@ -880,6 +909,8 @@ async function togglePush() {
     }
     await pushSubscription.unsubscribe();
     pushSubscription = null;
+    pushQuiet = false;
+    pushQuietPending = false;
     pushRelayState = 'removing';
     updatePushUI();
   } else {
@@ -926,7 +957,7 @@ async function testPush() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
     status.textContent = result.attempted === 0
-      ? 'No push subscriptions. Enable Push on this device first.'
+      ? result.muted > 0 ? 'All push subscriptions are in quiet mode.' : 'No push subscriptions. Enable Push on this device first.'
       : `Test sent to ${result.sent}/${result.attempted} subscription(s).`;
     await refreshHealth();
   } catch (error) {

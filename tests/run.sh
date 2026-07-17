@@ -99,7 +99,9 @@ python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   grep -q 'min-height: 0; overflow-y: auto' "$WEB" && \
   grep -q 'aria-label="Move selection up"' "$WEB" && \
   grep -q 'aria-label="Move selection down"' "$WEB" && \
-  grep -q 'if (show && activePane) closeTerminal()' "$WEB"
+  grep -q 'if (show && activePane) closeTerminal()' "$WEB" && \
+  grep -q 'id="pushQuiet"' "$WEB" && \
+  grep -q "type: 'push_quiet'" "$WEB"
 assert_eq "$?" "0" "installable PWA and subprotocol auth present"
 
 # --- macOS app ---

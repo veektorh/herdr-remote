@@ -98,6 +98,10 @@ class RelaySecurityTests(unittest.TestCase):
             },
         }
         validate_message(valid)
+        quiet = {**valid, "type": "push_quiet", "quiet": True}
+        self.assertTrue(validate_message(quiet)["quiet"])
+        with self.assertRaises(ValidationError):
+            validate_message({**quiet, "quiet": "yes"})
         valid["subscription"]["endpoint"] = "http://push.example"
         with self.assertRaises(ValidationError):
             validate_message(valid)

@@ -1,5 +1,5 @@
 // herdr-remote service worker — offline shell + Web Push notifications
-const CACHE_NAME = 'herdr-shell-v12';
+const CACHE_NAME = 'herdr-shell-v13';
 const SHELL_ASSETS = [
   '/', '/index.html', '/manifest.webmanifest', '/logo.svg',
   '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png'
