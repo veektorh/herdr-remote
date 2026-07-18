@@ -70,6 +70,14 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .agent.blocked { border-color: var(--red); background: color-mix(in srgb, var(--red) 5%, var(--surface)); }
 .workspace-card { border-color: color-mix(in srgb, var(--text) 10%, transparent); }
 .count-pill { display: inline-block; padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 0.65rem; }
+.chip-strip { display: flex; align-items: center; gap: 8px; overflow-x: auto; padding: 8px 12px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.chip-strip::-webkit-scrollbar { display: none; }
+.chip-label { font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); white-space: nowrap; }
+.chip { padding: 6px 14px; border-radius: 9999px; border: none; font-size: 0.8rem; font-weight: 500; white-space: nowrap; cursor: pointer; position: relative; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--muted); }
+.chip.active { background: var(--blue); color: #fff; }
+.chip.alert::after { content: ''; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); border: 2px solid var(--bg); }
+.chip:active { transform: scale(0.95); }
+.chip-add { border: 2px dashed var(--border); background: transparent; color: var(--muted); font-size: 1rem; padding: 4px 12px; }
 .agent .info { flex: 1; }
 .agent .project { font-size: 0.9rem; font-weight: 500; }
 .agent .meta { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
@@ -105,6 +113,15 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .arrow-popup button { width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
 .arrow-popup button:active { background: var(--border); }
 .arrow-popup .empty { visibility: hidden; }
+.quick-dock { border-top: 1px solid var(--border); padding: 8px 12px; background: var(--surface); flex-shrink: 0; }
+.quick-dock-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.quick-dock-header span { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.quick-dock-header button { background: none; border: none; color: var(--muted); font-size: 1rem; cursor: pointer; padding: 4px; }
+.quick-dock p { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 8px 0 4px; }
+.quick-dock p:first-of-type { margin-top: 0; }
+.quick-dock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.quick-dock-grid button { padding: 10px 4px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; min-height: 44px; }
+.quick-dock-grid button:active { background: var(--border); }
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 0.85rem; }
 
@@ -223,6 +240,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
     <button onclick="sendKey('Escape')">Esc</button>
     <button onclick="sendKeys(['Ctrl+c'])">^C</button>
     <button onclick="openCommandPalette()" class="key-blue">/</button>
+    <button onclick="toggleQuickDock()" aria-label="Quick actions">⚡</button>
     <span id="actionKeys"></span>
     <span class="spacer"></span>
     <div class="arrow-toggle">
@@ -234,6 +252,24 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
       </div>
     </div>
     <button onclick="document.getElementById('termInput').blur()">⌨↓</button>
+  </div>
+  <div class="quick-dock" id="quickDock" style="display:none">
+    <div class="quick-dock-header">
+      <span>Quick Actions</span>
+      <button onclick="toggleQuickDock()" aria-label="Close">✕</button>
+    </div>
+    <p>Confirm</p>
+    <div class="quick-dock-grid">
+      <button style="color:var(--green);border-color:var(--green)" onclick="quickSend('yes')">yes</button>
+      <button style="color:var(--red);border-color:var(--red)" onclick="quickSend('no')">no</button>
+    </div>
+    <p>Common</p>
+    <div class="quick-dock-grid">
+      <button onclick="quickSend('continue')">continue</button>
+      <button onclick="quickSend('retry')">retry</button>
+      <button onclick="quickSend('skip')">skip</button>
+      <button onclick="quickSend('commit and push')">commit &amp; push</button>
+    </div>
   </div>
 </div>
 
@@ -255,6 +291,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 let ws = null, agents = [], activePane = null, refreshInterval = null, userScrolledUp = false;
 let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
+let activeTab = null;
 let pendingSubmission = null;
 const pendingControls = new Map();
 let connectionState = 'disconnected', lastAgentUpdate = 0, reconnectTimer = null;
@@ -508,6 +545,7 @@ function render() {
   // If only one workspace or none have workspace_id, skip drill-down
   if (workspaces.length <= 1) {
     activeWorkspace = null;
+    activeTab = null;
     renderAgentList(displayedAgents);
     return;
   }
@@ -515,9 +553,35 @@ function render() {
   if (activeWorkspace === null) {
     renderWorkspaces(workspaces, displayedAgents);
   } else {
-    const filtered = displayedAgents.filter(a => a.workspace_id === activeWorkspace);
-    renderAgentList(filtered, true);
+    const wsAgents = displayedAgents.filter(a => a.workspace_id === activeWorkspace);
+    renderAgentList(wsAgents, true, activeWorkspace);
   }
+}
+
+function renderTabStrip(workspaceId, wsAgents) {
+  const tabs = [...new Set(wsAgents.map(a => a.tab_id).filter(Boolean))];
+  let html = `<div class="chip-strip"><span class="chip-label">Tabs</span>`;
+  if (tabs.length > 1) {
+    html += `<button class="chip${!activeTab?' active':''}" onclick="selectTab(null)">All</button>`;
+  }
+  tabs.forEach((tid, i) => {
+    const tabAgents = wsAgents.filter(a => a.tab_id === tid);
+    const hasBlocked = tabAgents.some(a => a.status === 'blocked');
+    const tabLabel = tabAgents[0]?.label || `Tab ${i+1}`;
+    const encodedTid = encodeURIComponent(tid).replace(/'/g, '%27');
+    html += `<button class="chip${activeTab===tid?' active':''}${hasBlocked?' alert':''}" onclick="selectTab(decodeURIComponent('${encodedTid}'))">${h(tabLabel)}</button>`;
+  });
+  const encodedWs = encodeURIComponent(workspaceId).replace(/'/g, '%27');
+  html += `<button class="chip chip-add" onclick="createTab(decodeURIComponent('${encodedWs}'))" aria-label="New tab">+</button>`;
+  html += `</div>`;
+  return html;
+}
+
+function selectTab(id) { activeTab = id; render(); }
+
+function createTab(workspaceId) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({type:'create_tab', workspace_id: workspaceId}));
 }
 
 function renderWorkspaces(workspaces, sourceAgents) {
@@ -557,25 +621,29 @@ function renderWorkspaces(workspaces, sourceAgents) {
   document.getElementById('agents').innerHTML = html;
 }
 
-function renderAgentList(list, showBack) {
-  const blocked = list.filter(a => a.status==='blocked');
-  const working = list.filter(a => a.status==='working');
-  const done = list.filter(a => a.status==='done');
-  const idle = list.filter(a => a.status==='idle'||a.status==='unknown');
+function renderAgentList(list, showBack, workspaceId) {
   let html = '';
   if (showBack) {
     html += `<div class="section-header" style="cursor:pointer" onclick="backToWorkspaces()"><span style="font-size:1rem">‹</span> All Workspaces</div>`;
   }
+  if (workspaceId) {
+    html += renderTabStrip(workspaceId, list);
+    if (activeTab) list = list.filter(a => a.tab_id === activeTab);
+  }
+  const blocked = list.filter(a => a.status==='blocked');
+  const working = list.filter(a => a.status==='working');
+  const done = list.filter(a => a.status==='done');
+  const idle = list.filter(a => a.status==='idle'||a.status==='unknown');
   if (blocked.length) html += section('Blocked', 'var(--red)', blocked);
   if (working.length) html += section('Working', 'var(--green)', working);
   if (done.length) html += section('Done', 'var(--accent)', done);
   if (idle.length) html += section('Idle', 'var(--muted)', idle);
-  if (!list.length) html = '<div class="empty">No agents in this workspace</div>';
+  if (!list.length) html += '<div class="empty">No agents in this workspace</div>';
   document.getElementById('agents').innerHTML = html;
 }
 
-function selectWorkspace(id) { activeWorkspace = id; render(); }
-function backToWorkspaces() { activeWorkspace = null; render(); }
+function selectWorkspace(id) { activeWorkspace = id; activeTab = null; render(); }
+function backToWorkspaces() { activeWorkspace = null; activeTab = null; render(); }
 
 function openRequestedPane() {
   const paneId = new URLSearchParams(location.search).get('pane');
@@ -646,6 +714,7 @@ function closeTerminal() {
   document.getElementById('termSendButton').disabled = false;
   document.getElementById('terminalView').classList.remove('active');
   document.getElementById('agentListView').style.display = '';
+  document.getElementById('quickDock').style.display = 'none';
 }
 
 let paneLines = 200;
@@ -696,6 +765,14 @@ function handleCommandResult(msg) {
 function sendText() {
   const input=document.getElementById('termInput');
   submitTextValue(input.value, true);
+}
+function toggleQuickDock() {
+  const el = document.getElementById('quickDock');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function quickSend(text) {
+  submitTextValue(text, false);
+  document.getElementById('quickDock').style.display = 'none';
 }
 function sendControl(action, payload, label, onSuccess=null) {
   if (!ws || ws.readyState !== WebSocket.OPEN || !activePane) return;

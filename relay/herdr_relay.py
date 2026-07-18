@@ -774,7 +774,7 @@ async def handle_client(ws):
             msg_type = msg.get("type")
             required_scope = {
                 "respond": "control", "send_keys": "control", "send_text": "control",
-                "submit_text": "control",
+                "submit_text": "control", "create_tab": "control",
                 "read_pane": "read", "agent_event": "events",
                 "push_subscribe": "push", "push_unsubscribe": "push", "push_quiet": "push",
             }[msg_type]
@@ -866,6 +866,17 @@ async def handle_client(ws):
                 await ws.send(json.dumps(command_result(
                     msg_type, pane_id, ok, request_id
                 )))
+            elif msg_type == "create_tab":
+                workspace_id = msg["workspace_id"]
+                limiter_key = getattr(auth, "device_id", "") or f"{getattr(auth, 'role', 'client')}:{ip}"
+                if not command_limiter.allow(limiter_key):
+                    audit("rate_limited", ip, device, "", f"action={msg_type}")
+                    await ws.send(json.dumps({"type": "tab_created", "ok": False, "request_id": msg.get("request_id")}))
+                    continue
+                log.info("Create tab from %s (%s): workspace=%s", ip, device, workspace_id)
+                audit("create_tab", ip, device, "", f"workspace={workspace_id}")
+                ok, _ = run_herdr_result("tab", "create", "--workspace", workspace_id, "--focus")
+                await ws.send(json.dumps({"type": "tab_created", "ok": ok, "request_id": msg.get("request_id")}))
             elif msg_type == "push_subscribe":
                 sub = msg.get("subscription")
                 existing = False

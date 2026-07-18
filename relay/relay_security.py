@@ -26,7 +26,7 @@ SAFE_KEYS = {
 KEY_ALIASES = {"Ctrl+c": "C-c", "Ctrl+C": "C-c"}
 MESSAGE_TYPES = {
     "respond", "agent_event", "read_pane", "send_keys", "send_text", "submit_text",
-    "push_subscribe", "push_unsubscribe", "push_quiet",
+    "create_tab", "push_subscribe", "push_unsubscribe", "push_quiet",
 }
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -178,6 +178,8 @@ def validate_message(message) -> dict:
             "cwd": str(message.get("cwd", ""))[:1000],
             "host": str(message.get("host", "remote"))[:256],
         })
+    elif message_type == "create_tab":
+        clean["workspace_id"] = _required_string(message, "workspace_id", 128)
     else:
         subscription = message.get("subscription")
         if not isinstance(subscription, dict):
