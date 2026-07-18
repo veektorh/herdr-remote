@@ -92,7 +92,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .term-input button:disabled { opacity: 0.55; cursor: wait; }
 .command-status { min-height: 18px; padding: 1px 12px 3px; background: var(--surface); color: var(--muted); font-size: 0.68rem; flex-shrink: 0; }
 .command-status.error { color: var(--red); }
-.term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: flex; gap: 4px; background: var(--surface); flex-shrink: 0; padding-bottom: env(safe-area-inset-bottom, 6px); align-items: center; overflow-x: auto; }
+.term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 4px 4px; background: var(--surface); flex-shrink: 0; padding-bottom: env(safe-area-inset-bottom, 6px); align-items: center; }
 .term-keys button { padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; }
 .term-keys button:active { background: var(--border); }
 .term-keys button.key-green { border-color: var(--green); color: var(--green); }
