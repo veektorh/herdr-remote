@@ -414,7 +414,7 @@ def detect_options(text):
 async def broadcast(msg):
     data = json.dumps(msg)
     dead = set()
-    for ws in clients:
+    for ws in list(clients):
         try:
             await ws.send(data)
         except (ConnectionClosedError, ConnectionClosedOK):
@@ -433,60 +433,63 @@ def is_completion_transition(previous_status, current_status):
 async def poll_loop():
     poll_failure_reported = False
     while True:
-        agents = get_all_agents()
-        if not last_poll_ok:
-            if not poll_failure_reported:
-                log.warning("Herdr pane poll failed; retaining the last valid agent list")
-                poll_failure_reported = True
-            await asyncio.sleep(POLL_INTERVAL)
-            continue
-        if poll_failure_reported:
-            log.info("Herdr pane poll recovered")
-            poll_failure_reported = False
+        try:
+            agents = get_all_agents()
+            if not last_poll_ok:
+                if not poll_failure_reported:
+                    log.warning("Herdr pane poll failed; retaining the last valid agent list")
+                    poll_failure_reported = True
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+            if poll_failure_reported:
+                log.info("Herdr pane poll recovered")
+                poll_failure_reported = False
 
-        # A successful empty list is valid and must still clear disconnected panes.
-        for a in agents:
-            pane_remote_map[a["pane_id"]] = a.get("remote")
-            known_panes.add(a["pane_id"])
-        await broadcast({"type": "agents", "agents": agents})
-        for a in agents:
-            pid, status = a["pane_id"], a["status"]
-            previous_status = last_statuses.get(pid)
-            if status == "blocked" and previous_status != "blocked":
-                content = read_pane(pid, remote=a.get("remote"))
-                options = detect_options(content)
-                await broadcast({
-                    "type": "blocked", "pane_id": pid,
-                    "agent": a["agent"], "project": a["project"],
-                    "host": a.get("host", "local"),
-                    "prompt": content[:500],
-                    "options": options or TOOL_OPTIONS
-                })
-                # Web Push notification
-                await send_web_push(
-                    title=f"🐑 {a['project']} blocked",
-                    body=content[:120],
-                    url=f"/?pane={urllib.parse.quote(pid, safe='')}",
-                    tag="herdr-blocked",
-                )
-            if is_completion_transition(previous_status, status):
-                await send_web_push(
-                    title=f"✅ {a['project']} finished",
-                    body=f"{a['agent']} is ready for your review.",
-                    url=f"/?pane={urllib.parse.quote(pid, safe='')}",
-                    tag="herdr-complete",
-                )
-            elif status != "blocked" and previous_status == "blocked":
-                await send_web_push("", "", clear=True)
-            last_statuses[pid] = status
-        # Clean up panes that are no longer reported
-        current_pane_ids = {a["pane_id"] for a in agents}
-        stale = known_panes - current_pane_ids
-        if stale:
-            known_panes.difference_update(stale)
-            for pid in stale:
-                pane_remote_map.pop(pid, None)
-                last_statuses.pop(pid, None)
+            # A successful empty list is valid and must still clear disconnected panes.
+            for a in agents:
+                pane_remote_map[a["pane_id"]] = a.get("remote")
+                known_panes.add(a["pane_id"])
+            await broadcast({"type": "agents", "agents": agents})
+            for a in agents:
+                pid, status = a["pane_id"], a["status"]
+                previous_status = last_statuses.get(pid)
+                if status == "blocked" and previous_status != "blocked":
+                    content = read_pane(pid, remote=a.get("remote"))
+                    options = detect_options(content)
+                    await broadcast({
+                        "type": "blocked", "pane_id": pid,
+                        "agent": a["agent"], "project": a["project"],
+                        "host": a.get("host", "local"),
+                        "prompt": content[:500],
+                        "options": options or TOOL_OPTIONS
+                    })
+                    # Web Push notification
+                    await send_web_push(
+                        title=f"🐑 {a['project']} blocked",
+                        body=content[:120],
+                        url=f"/?pane={urllib.parse.quote(pid, safe='')}",
+                        tag="herdr-blocked",
+                    )
+                if is_completion_transition(previous_status, status):
+                    await send_web_push(
+                        title=f"✅ {a['project']} finished",
+                        body=f"{a['agent']} is ready for your review.",
+                        url=f"/?pane={urllib.parse.quote(pid, safe='')}",
+                        tag="herdr-complete",
+                    )
+                elif status != "blocked" and previous_status == "blocked":
+                    await send_web_push("", "", clear=True)
+                last_statuses[pid] = status
+            # Clean up panes that are no longer reported
+            current_pane_ids = {a["pane_id"] for a in agents}
+            stale = known_panes - current_pane_ids
+            if stale:
+                known_panes.difference_update(stale)
+                for pid in stale:
+                    pane_remote_map.pop(pid, None)
+                    last_statuses.pop(pid, None)
+        except Exception:
+            log.exception("poll_loop iteration failed; continuing")
         await asyncio.sleep(POLL_INTERVAL)
 
 
