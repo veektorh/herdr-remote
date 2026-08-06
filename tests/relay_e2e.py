@@ -97,8 +97,7 @@ class RelayNetworkTests(unittest.IsolatedAsyncioTestCase):
                 "request_id": "e2e_123",
             })
             self.assertEqual(self.commands, [
-                (("pane", "send-text", "pane-e2e", "hello from e2e"), None),
-                (("pane", "send-keys", "pane-e2e", "Enter"), None),
+                (("pane", "run", "pane-e2e", "hello from e2e"), None),
             ])
 
             await websocket.send(json.dumps({

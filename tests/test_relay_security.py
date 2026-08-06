@@ -67,6 +67,8 @@ class RelaySecurityTests(unittest.TestCase):
         self.assertEqual(message["keys"], ["C-c"])
         arrows = validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["Up", "Down", "Enter"]})
         self.assertEqual(arrows["keys"], ["Up", "Down", "Enter"])
+        backtab = validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["BackTab"]})
+        self.assertEqual(backtab["keys"], ["BackTab"])
         with self.assertRaises(ValidationError):
             validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["F12"]})
         with self.assertRaises(ValidationError):

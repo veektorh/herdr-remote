@@ -272,13 +272,12 @@ class RelayHttpTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
-    def test_submit_text_presses_enter_only_after_insertion_succeeds(self):
+    def test_submit_text_uses_atomic_pane_run(self):
         success = types.SimpleNamespace(returncode=0, stdout="", stderr="")
         with patch.object(self.relay.subprocess, "run", return_value=success) as run:
             self.assertTrue(self.relay.submit_text("pane-1", "hello"))
-            self.assertEqual(run.call_count, 2)
-            self.assertEqual(run.call_args_list[0].args[0][-4:], ["pane", "send-text", "pane-1", "hello"])
-            self.assertEqual(run.call_args_list[1].args[0][-4:], ["pane", "send-keys", "pane-1", "Enter"])
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0][-4:], ["pane", "run", "pane-1", "hello"])
 
         failure = types.SimpleNamespace(returncode=1, stdout="", stderr="not logged")
         with patch.object(self.relay.subprocess, "run", return_value=failure) as run:

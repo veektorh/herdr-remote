@@ -20,7 +20,7 @@ SAFE_RESPONSES = {
     "approve all pending", "configure individually", "exit (cancel subagents)",
 }
 SAFE_KEYS = {
-    "y", "n", "a", "Enter", "Tab", "Escape", "C-c",
+    "y", "n", "a", "Enter", "Tab", "BackTab", "Escape", "C-c",
     "Up", "Down", "Left", "Right", "BSpace",
 }
 KEY_ALIASES = {"Ctrl+c": "C-c", "Ctrl+C": "C-c"}

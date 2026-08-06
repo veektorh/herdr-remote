@@ -81,6 +81,7 @@ echo "13. PWA manifest, offline shell, and browser syntax"
 python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   node --check "$DIR/web/sw.js" >/dev/null 2>&1 && \
   awk '/<script>/{flag=1;next}/<\/script>/{flag=0}flag' "$WEB" | node --check >/dev/null 2>&1 && \
+  node "$DIR/tests/web_refresh_logic.test.js" && \
   grep -q 'icon-maskable-512.png' "$DIR/web/manifest.webmanifest" && \
   grep -q 'CACHE_NAME' "$DIR/web/sw.js" && \
   grep -q 'herdr-auth.' "$WEB" && \
@@ -99,6 +100,11 @@ python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   grep -q 'min-height: 0; overflow-y: auto' "$WEB" && \
   grep -q 'aria-label="Move selection up"' "$WEB" && \
   grep -q 'aria-label="Move selection down"' "$WEB" && \
+  grep -q 'id="livePill"' "$WEB" && \
+  grep -q 'grid-template-columns: repeat(2, minmax(0, 1fr))' "$WEB" && \
+  grep -q "sendKey('BackTab')" "$WEB" && \
+  grep -q 'id="terminalTextScale"' "$WEB" && \
+  grep -q 'function resumeCard' "$WEB" && \
   grep -q 'if (show && activePane) closeTerminal()' "$WEB" && \
   grep -q 'id="pushQuiet"' "$WEB" && \
   grep -q "type: 'push_quiet'" "$WEB"

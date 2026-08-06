@@ -326,11 +326,8 @@ def run_herdr(*args, remote=None):
 
 
 def submit_text(pane_id: str, value: str, remote=None) -> bool:
-    """Insert text and press Enter only when the text insertion succeeded."""
-    inserted, _ = run_herdr_result("pane", "send-text", pane_id, value, remote=remote)
-    if not inserted:
-        return False
-    submitted, _ = run_herdr_result("pane", "send-keys", pane_id, "Enter", remote=remote)
+    """Insert text and press Enter atomically through Herdr."""
+    submitted, _ = run_herdr_result("pane", "run", pane_id, value, remote=remote)
     return submitted
 
 
