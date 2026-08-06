@@ -26,7 +26,8 @@ SAFE_KEYS = {
 KEY_ALIASES = {"Ctrl+c": "C-c", "Ctrl+C": "C-c"}
 MESSAGE_TYPES = {
     "respond", "agent_event", "read_pane", "send_keys", "send_text", "submit_text",
-    "create_tab", "push_subscribe", "push_unsubscribe", "push_quiet",
+    "create_tab", "list_projects", "activate_project", "close_project",
+    "push_subscribe", "push_unsubscribe", "push_quiet",
 }
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -128,6 +129,13 @@ def _required_string(message: dict, name: str, maximum: int = 256) -> str:
     return value
 
 
+def _project_id(message: dict) -> str:
+    project_id = _required_string(message, "project_id", 128)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", project_id):
+        raise ValidationError("project_id contains invalid characters")
+    return project_id
+
+
 def validate_message(message) -> dict:
     """Validate and normalize one client protocol message."""
     if not isinstance(message, dict):
@@ -184,6 +192,20 @@ def validate_message(message) -> dict:
         })
     elif message_type == "create_tab":
         clean["workspace_id"] = _required_string(message, "workspace_id", 128)
+    elif message_type == "activate_project":
+        clean["project_id"] = _project_id(message)
+        agent = _required_string(message, "agent", 32)
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", agent):
+            raise ValidationError("agent contains invalid characters")
+        clean["agent"] = agent
+        start_new = message.get("start_new", False)
+        if not isinstance(start_new, bool):
+            raise ValidationError("start_new must be a boolean")
+        clean["start_new"] = start_new
+    elif message_type == "close_project":
+        clean["project_id"] = _project_id(message)
+    elif message_type == "list_projects":
+        pass
     else:
         subscription = message.get("subscription")
         if not isinstance(subscription, dict):

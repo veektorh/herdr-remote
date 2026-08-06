@@ -152,6 +152,14 @@ if the browser ignores that request, open Settings and select **Lock portrait**.
 If an update is not visible, fully close and reopen the PWA once so the
 network-first shell can activate the new service worker.
 
+Select **Open project** on the dashboard to browse the same grouped Herdr Plus
+templates used by the desktop project picker. Choose one of the supported agents
+installed on the relay host; Herdr creates or focuses the workspace, starts that
+agent in a dedicated tab, and waits until it is detected before opening it on
+the phone. Existing workspaces with no active agent get a new agent tab. The
+trusted server maps the selected agent ID to Herdr's built-in agent launcher, so
+the phone never supplies a working directory or command directly.
+
 ## 6. Keep WSL running
 
 The Windows computer must be awake, and the WSL distribution, relay, and chosen

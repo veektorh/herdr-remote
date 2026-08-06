@@ -20,6 +20,9 @@ curl -sL https://github.com/dcolinmorgan/herdr-remote/releases/latest/download/H
 - **One-tap approvals** from phone, menu bar, or Telegram
 - **Daily activity digest** -- `/digest` in Telegram shows working time + block count
 - **Terminal interaction** -- read output, send commands, interrupt agents remotely
+- **Project launcher** -- browse Herdr Plus templates, choose an installed agent, and open it from your phone
+- **Project lifecycle** -- resume the running agent, start another installed agent in its own tab, or close the whole workspace after confirming
+- **Voice dictation** -- talk to your phone and the transcript fills the message box for review before you send it (browser speech API; Chrome routes audio through Google)
 - **Notifications** -- know instantly when agents need you or finish
 - **11 themes** -- dark, herdr, light, sand, clay, dune, nord, rose, dracula, kanagawa, midnight
 

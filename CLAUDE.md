@@ -78,6 +78,12 @@ cd herdi-ios && xcodegen generate
 
 The web app is a single self-contained HTML file (`web/index.html`) with inline CSS and JS — no build step. It includes an installable manifest, offline application shell, Android/Windows layout, Web Push with delivery testing, short-lived QR pairing, paired-device revocation, and a mobile terminal keyboard. Browser credentials use a WebSocket subprotocol rather than URL query parameters.
 
+Voice dictation uses the browser's own `SpeechRecognition` API — no dependency
+and no relay involvement. The mic button is hidden unless the API exists in a
+secure context. Speech fills the message box for review and is never submitted
+automatically; transcripts are never logged. Note that Chrome's implementation
+sends audio to Google's speech service, so treat dictation as off-device.
+
 Pairing codes are eight-character, single-use, and valid for two minutes. Paired
 device tokens are scoped and only their hashes are persisted in
 `~/.config/herdr-remote/devices.json` with mode `0600`. VAPID keys are generated
@@ -89,7 +95,11 @@ Messages are JSON with a `type` field:
 
 **Server → Client:** `agents` (state list), `blocked` (approval prompt), `pane_content` (terminal read), `command_result` (correlated write acknowledgement)
 
-**Client → Server:** `respond` (allowlisted approval), `read_pane` (request terminal content), `send_keys` (allowlisted key sequences), `send_text` (raw text without newline), `submit_text` (text plus Enter with correlated acknowledgement)
+**Client → Server:** `respond` (allowlisted approval), `read_pane` (request terminal content), `send_keys` (allowlisted key sequences), `send_text` (raw text without newline), `submit_text` (text plus Enter with correlated acknowledgement), `list_projects` (Herdr Plus catalog), `activate_project` (open or resume a project; `start_new` adds another agent in its own tab without touching running ones), `close_project` (terminate a project's workspace)
+
+Project messages carry only a catalog project id and an allowlisted agent kind.
+The relay resolves the workspace and working directory server-side, so a client
+can never supply a cwd, a workspace id, or an arbitrary Herdr command.
 
 Write messages may include a bounded `request_id`; new clients use it to match
 `command_result` responses. `send_text` remains supported for Herdr 0.7-era

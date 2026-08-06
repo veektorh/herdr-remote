@@ -82,6 +82,8 @@ python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   node --check "$DIR/web/sw.js" >/dev/null 2>&1 && \
   awk '/<script>/{flag=1;next}/<\/script>/{flag=0}flag' "$WEB" | node --check >/dev/null 2>&1 && \
   node "$DIR/tests/web_refresh_logic.test.js" && \
+  node "$DIR/tests/web_project_lifecycle.test.js" >/dev/null && \
+  node "$DIR/tests/web_voice_input.test.js" >/dev/null && \
   grep -q 'icon-maskable-512.png' "$DIR/web/manifest.webmanifest" && \
   grep -q 'CACHE_NAME' "$DIR/web/sw.js" && \
   grep -q 'herdr-auth.' "$WEB" && \
@@ -105,6 +107,18 @@ python3 -m json.tool "$DIR/web/manifest.webmanifest" >/dev/null && \
   grep -q "sendKey('BackTab')" "$WEB" && \
   grep -q 'id="terminalTextScale"' "$WEB" && \
   grep -q 'function resumeCard' "$WEB" && \
+  grep -q 'id="projectLauncher"' "$WEB" && \
+  grep -q "type:'list_projects'" "$WEB" && \
+  grep -q "type:'activate_project'" "$WEB" && \
+  grep -q 'Choose an agent' "$WEB" && \
+  grep -q 'agent:agentKind' "$WEB" && \
+  grep -q "type:'close_project'" "$WEB" && \
+  grep -q 'start_new:startNew' "$WEB" && \
+  grep -q 'id="projectCloseConfirm" role="alertdialog"' "$WEB" && \
+  grep -q 'Start another agent' "$WEB" && \
+  grep -q 'id="micButton"' "$WEB" && \
+  grep -q 'webkitSpeechRecognition' "$WEB" && \
+  grep -q 'aria-label="Dictate message"' "$WEB" && \
   grep -q 'if (show && activePane) closeTerminal()' "$WEB" && \
   grep -q 'id="pushQuiet"' "$WEB" && \
   grep -q "type: 'push_quiet'" "$WEB"

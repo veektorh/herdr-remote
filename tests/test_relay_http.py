@@ -6,7 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 
 class StubHeaders:
@@ -71,6 +71,29 @@ class Request:
         self.headers = StubHeaders(headers)
 
 
+class ScriptedSocket:
+    """A client socket that replays scripted messages and records replies."""
+
+    remote_address = ("127.0.0.1", 12345)
+
+    def __init__(self, messages, scopes=("read", "control")):
+        self.request = Request(headers=[("User-Agent", "test")])
+        self.herdr_auth = types.SimpleNamespace(allows=lambda scope: scope in set(scopes))
+        self.messages = [__import__("json").dumps(message) for message in messages]
+        self.sent = []
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.messages:
+            raise StopAsyncIteration
+        return self.messages.pop(0)
+
+    async def send(self, value):
+        self.sent.append(__import__("json").loads(value))
+
+
 class RelayHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -92,8 +115,21 @@ class RelayHttpTests(unittest.TestCase):
             handler.close()
         cls.temp_dir.cleanup()
 
+    def setUp(self):
+        # Project actions share one process-wide limiter; isolate it per test.
+        self.relay.project_limiter = self.relay.SlidingWindowLimiter(6, 60)
+
     def call(self, request):
         return asyncio.run(self.relay.process_request(None, request))
+
+    def read_audit(self):
+        for handler in self.relay.audit_log.handlers:
+            handler.flush()
+        path = os.path.join(self.temp_dir.name, "audit.log")
+        if not os.path.exists(path):
+            return ""
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
 
     def test_websocket_requires_authentication(self):
         response = self.call(Request(headers=[("Upgrade", "websocket")]))
@@ -207,6 +243,55 @@ class RelayHttpTests(unittest.TestCase):
         ])))
         self.assertIsNone(accepted)
         self.assertTrue(connection.herdr_auth.allows("control"))
+
+    def test_history_reads_get_more_headroom_than_viewport_reads(self):
+        # Killing Herdr mid-snapshot disturbs the pane it renders, so a slow
+        # scrollback read must not be cut off at the viewport timeout.
+        self.assertGreater(self.relay.PANE_HISTORY_TIMEOUT, self.relay.PANE_READ_TIMEOUT)
+        calls = []
+
+        class FakeCompleted:
+            returncode = 0
+            stdout = "output"
+
+        def record(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("timeout")))
+            return FakeCompleted()
+
+        with patch.object(self.relay.subprocess, "run", side_effect=record):
+            self.relay.run_herdr("pane", "read", "w3R:p2", "--source", "visible")
+            self.relay.run_herdr(
+                "pane", "read", "w3R:p2", "--source", "recent",
+                timeout=self.relay.PANE_HISTORY_TIMEOUT,
+            )
+        self.assertEqual(calls[0][1], self.relay.PANE_READ_TIMEOUT)
+        self.assertEqual(calls[1][1], self.relay.PANE_HISTORY_TIMEOUT)
+
+    def test_herdr_trace_records_timing_without_leaking_user_text(self):
+        records = []
+        with patch.object(self.relay.log, "info", side_effect=lambda *a: records.append(a % () if not a[1:] else a[0] % a[1:])):
+            with patch.object(self.relay, "TRACE_HERDR", False):
+                self.relay.trace_herdr_call(("pane", "read", "w3R:p2"), 0.0, True)
+            self.assertEqual(records, [], "tracing stays off unless explicitly enabled")
+            with patch.object(self.relay, "TRACE_HERDR", True):
+                self.relay.trace_herdr_call(
+                    ("pane", "send-text", "w3R:p2", "my private message"), 0.0, True,
+                )
+                self.relay.trace_herdr_call(("pane", "list"), 0.0, True)
+        self.assertEqual(len(records), 2)
+        self.assertIn("cmd=pane send-text", records[0])
+        self.assertIn("target=w3R:p2", records[0])
+        self.assertNotIn("my private message", records[0])
+        self.assertIn("cmd=pane list", records[1])
+        self.assertIn("target=", records[1])
+
+    def test_dictation_is_permitted_for_this_origin_only(self):
+        response = self.call(Request(path="/"))
+        policy = dict(response.headers.raw_items())["Permissions-Policy"]
+        # An empty microphone allowlist blocks the app's own SpeechRecognition.
+        self.assertIn("microphone=(self)", policy)
+        self.assertIn("camera=()", policy)
+        self.assertIn("geolocation=()", policy)
 
     def test_manifest_and_icons_are_served(self):
         for path in ("/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
@@ -359,7 +444,7 @@ class RelayHttpTests(unittest.TestCase):
             read.assert_awaited_once_with(
                 self.relay.run_herdr, "pane", "read", "pane-1", "--lines", "200",
                 "--source", "visible",
-                remote=None,
+                remote=None, timeout=self.relay.PANE_READ_TIMEOUT,
             )
             self.assertEqual(socket.sent, [{
                 "type": "pane_content", "pane_id": "pane-1",
@@ -470,6 +555,174 @@ class RelayHttpTests(unittest.TestCase):
             "type": "command_result", "action": "respond", "ok": False,
             "pane_id": "pane-1", "request_id": "approval_123",
         }])
+
+    def test_project_catalog_and_activation_return_correlated_results(self):
+        class FakeSocket:
+            remote_address = ("127.0.0.1", 12345)
+            request = Request(headers=[("User-Agent", "test")])
+            herdr_auth = types.SimpleNamespace(allows=lambda scope: scope in {"read", "control"})
+
+            def __init__(self):
+                self.messages = [
+                    __import__("json").dumps({
+                        "type": "list_projects", "request_id": "projects_123",
+                    }),
+                    __import__("json").dumps({
+                        "type": "activate_project", "project_id": "alpha",
+                        "agent": "codex", "request_id": "activate_123",
+                    }),
+                ]
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.messages:
+                    raise StopAsyncIteration
+                return self.messages.pop(0)
+
+            async def send(self, value):
+                self.sent.append(__import__("json").loads(value))
+
+        projects = [{
+            "id": "alpha", "name": "Alpha", "description": "Alpha workspace",
+            "group": "Personal", "tabs": ["terminal"], "active": False,
+            "workspace_id": "", "has_agent": False, "agent": "",
+        }]
+        agent_choices = [{"id": "codex", "label": "Codex"}]
+        catalog_result = {"projects": projects, "agents": agent_choices}
+        socket = FakeSocket()
+        with patch.object(self.relay, "project_catalog", return_value=catalog_result) as catalog, \
+             patch.object(self.relay, "open_project", return_value={
+                 "workspace_id": "w-new", "already_active": False,
+                 "agent_started": True, "pane_id": "p-agent", "agent": "codex",
+             }) as activate, \
+             patch.object(
+                 self.relay.asyncio, "to_thread",
+                 new=AsyncMock(side_effect=[catalog_result, {
+                     "workspace_id": "w-new", "already_active": False,
+                     "agent_started": True, "pane_id": "p-agent", "agent": "codex",
+                 }]),
+             ) as to_thread:
+            asyncio.run(self.relay.handle_client(socket))
+        activate.assert_not_called()
+        to_thread.assert_has_awaits([
+            call(catalog), call(activate, "alpha", "codex", False),
+        ])
+        self.assertEqual(socket.sent, [
+            {
+                "type": "projects", "projects": projects, "agents": agent_choices,
+                "request_id": "projects_123",
+            },
+            {
+                "type": "project_activated", "ok": True, "project_id": "alpha",
+                "request_id": "activate_123", "workspace_id": "w-new",
+                "already_active": False, "agent_started": True,
+                "pane_id": "p-agent", "agent": "codex",
+            },
+        ])
+
+    def test_starting_another_agent_is_forwarded_without_stopping_the_running_one(self):
+        socket = ScriptedSocket([{
+            "type": "activate_project", "project_id": "alpha", "agent": "claude",
+            "start_new": True, "request_id": "activate_456",
+        }])
+        started = {
+            "workspace_id": "w-existing", "already_active": True, "agent_started": True,
+            "started_new": True, "pane_id": "p-second", "agent": "claude",
+        }
+        with patch.object(self.relay, "open_project", return_value=started) as activate, \
+             patch.object(
+                 self.relay.asyncio, "to_thread", new=AsyncMock(return_value=started),
+             ) as to_thread:
+            asyncio.run(self.relay.handle_client(socket))
+        to_thread.assert_awaited_once_with(activate, "alpha", "claude", True)
+        self.assertEqual(socket.sent, [{
+            "type": "project_activated", "ok": True, "project_id": "alpha",
+            "request_id": "activate_456", **started,
+        }])
+        self.assertIn("start_new=1", self.read_audit())
+
+    def test_close_project_sends_only_a_trusted_project_id_and_audits_it(self):
+        socket = ScriptedSocket([{
+            "type": "close_project", "project_id": "alpha", "request_id": "close_456",
+            "workspace_id": "w-attacker", "cwd": "/etc",
+        }])
+        closed = {"workspace_id": "w-existing", "closed": True, "already_closed": False}
+        with patch.object(self.relay, "shutdown_project", return_value=closed) as shutdown, \
+             patch.object(
+                 self.relay.asyncio, "to_thread", new=AsyncMock(return_value=closed),
+             ) as to_thread:
+            asyncio.run(self.relay.handle_client(socket))
+        shutdown.assert_not_called()
+        to_thread.assert_awaited_once_with(shutdown, "alpha")
+        self.assertEqual(socket.sent, [{
+            "type": "project_closed", "ok": True, "project_id": "alpha",
+            "request_id": "close_456", **closed,
+        }])
+        audit = self.read_audit()
+        self.assertIn('"action":"close_project"', audit)
+        self.assertIn("project=alpha", audit)
+        self.assertNotIn("w-attacker", audit)
+        self.assertNotIn("/etc", audit)
+
+    def test_close_project_requires_the_control_scope(self):
+        socket = ScriptedSocket(
+            [{"type": "close_project", "project_id": "alpha", "request_id": "close_789"}],
+            scopes=("read",),
+        )
+        with patch.object(self.relay, "shutdown_project") as shutdown, \
+             patch.object(self.relay.asyncio, "to_thread", new=AsyncMock()) as to_thread:
+            asyncio.run(self.relay.handle_client(socket))
+        shutdown.assert_not_called()
+        to_thread.assert_not_awaited()
+        self.assertEqual(socket.sent, [{
+            "type": "error", "message": "not authorized for this action",
+            "request_id": "close_789",
+        }])
+
+    def test_close_project_reports_unknown_projects_and_already_closed_workspaces(self):
+        socket = ScriptedSocket([
+            {"type": "close_project", "project_id": "ghost", "request_id": "close_1"},
+            {"type": "close_project", "project_id": "alpha", "request_id": "close_2"},
+        ])
+        already_closed = {"workspace_id": "", "closed": False, "already_closed": True}
+        with patch.object(self.relay, "shutdown_project"), \
+             patch.object(
+                 self.relay.asyncio, "to_thread",
+                 new=AsyncMock(side_effect=[
+                     self.relay.ProjectCatalogError("Unknown project"), already_closed,
+                 ]),
+             ):
+            asyncio.run(self.relay.handle_client(socket))
+        self.assertEqual(socket.sent, [
+            {
+                "type": "project_closed", "ok": False, "project_id": "ghost",
+                "request_id": "close_1", "error": "Unknown project",
+            },
+            {
+                "type": "project_closed", "ok": True, "project_id": "alpha",
+                "request_id": "close_2", **already_closed,
+            },
+        ])
+
+    def test_close_project_is_rate_limited_without_reaching_herdr(self):
+        self.relay.project_limiter = self.relay.SlidingWindowLimiter(1, 60)
+        socket = ScriptedSocket([
+            {"type": "close_project", "project_id": "alpha", "request_id": "close_1"},
+            {"type": "close_project", "project_id": "alpha", "request_id": "close_2"},
+        ])
+        closed = {"workspace_id": "w-existing", "closed": True, "already_closed": False}
+        with patch.object(self.relay, "shutdown_project"), \
+             patch.object(
+                 self.relay.asyncio, "to_thread", new=AsyncMock(return_value=closed),
+             ) as to_thread:
+            asyncio.run(self.relay.handle_client(socket))
+        self.assertEqual(to_thread.await_count, 1)
+        self.assertTrue(socket.sent[0]["ok"])
+        self.assertFalse(socket.sent[1]["ok"])
+        self.assertIn("Too many", socket.sent[1]["error"])
 
     def test_health_reports_request_proxy_and_push_subscription_count(self):
         self.relay.push_subscriptions[:] = []

@@ -27,6 +27,11 @@ export default {
     ];
 
     const blockedPrompt = `Do you want to allow this tool call?\n\nTool: write_file\nPath: src/components/Graph.tsx\n\n> yes, single permission\n> trust, always allow\n> no (tab to edit)`;
+    const projects = [
+      { id: 'phoenix-api', name: 'phoenix-api', description: 'Demo API workspace', group: 'Demo', tabs: ['terminal', 'agent'], active: true, workspace_id: '', has_agent: true, agent: 'claude' },
+      { id: 'orbit-ui', name: 'orbit-ui', description: 'Demo frontend workspace', group: 'Demo', tabs: ['terminal', 'agent'], active: true, workspace_id: '', has_agent: true, agent: 'codex' },
+      { id: 'starlight-docs', name: 'starlight-docs', description: 'Available project template', group: 'Demo', tabs: ['terminal', 'agent'], active: false, workspace_id: '', has_agent: false, agent: '' },
+    ];
 
     server.send(JSON.stringify({ type: 'agents', agents }));
     server.send(JSON.stringify({
@@ -59,6 +64,22 @@ export default {
             type: 'pane_content', pane_id: msg.pane_id,
             content: `$ herdr agent session\n\n[demo mode -- read-only preview]\n\nAgent: ${msg.pane_id.split(':')[1]}\nProject: ${agents.find(a => a.pane_id === msg.pane_id)?.project || 'unknown'}\n\n  Compiled successfully\n  Running tests...\n\n  PASS src/index.test.ts\n  PASS src/utils.test.ts\n\nAll tests passed.`,
             ...(msg.request_id ? {request_id: msg.request_id} : {})
+          }));
+        } else if (msg.type === 'list_projects') {
+          server.send(JSON.stringify({
+            type:'projects', projects, agents:[
+              {id:'codex', label:'Codex'}, {id:'claude', label:'Claude'}
+            ], request_id:msg.request_id
+          }));
+        } else if (msg.type === 'activate_project') {
+          server.send(JSON.stringify({
+            type:'project_activated', ok:false, project_id:msg.project_id,
+            request_id:msg.request_id, error:'Project launching is unavailable in demo mode.'
+          }));
+        } else if (msg.type === 'close_project') {
+          server.send(JSON.stringify({
+            type:'project_closed', ok:false, project_id:msg.project_id,
+            request_id:msg.request_id, error:'Closing projects is unavailable in demo mode.'
           }));
         } else if (msg.type === 'respond') {
           const a = agents.find(x => x.pane_id === msg.pane_id);

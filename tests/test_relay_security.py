@@ -99,6 +99,50 @@ class RelaySecurityTests(unittest.TestCase):
                 "type": "submit_text", "pane_id": "pane-1", "text": "hello",
                 "request_id": "bad request id",
             })
+        self.assertEqual(validate_message({"type": "list_projects"}), {"type": "list_projects"})
+        activated = validate_message({
+            "type": "activate_project", "project_id": "subscription-manager",
+            "agent": "codex", "request_id": "project_123",
+        })
+        self.assertEqual(activated["project_id"], "subscription-manager")
+        self.assertEqual(activated["agent"], "codex")
+        self.assertFalse(activated["start_new"])
+        with self.assertRaises(ValidationError):
+            validate_message({
+                "type": "activate_project", "project_id": "../private", "agent": "codex",
+            })
+        with self.assertRaises(ValidationError):
+            validate_message({
+                "type": "activate_project", "project_id": "alpha", "agent": "../../bin/sh",
+            })
+
+    def test_project_lifecycle_validation(self):
+        started = validate_message({
+            "type": "activate_project", "project_id": "alpha", "agent": "claude",
+            "start_new": True, "request_id": "activate_1",
+        })
+        self.assertTrue(started["start_new"])
+        with self.assertRaises(ValidationError):
+            validate_message({
+                "type": "activate_project", "project_id": "alpha", "agent": "claude",
+                "start_new": "yes",
+            })
+        closed = validate_message({
+            "type": "close_project", "project_id": "alpha", "request_id": "close_1",
+        })
+        self.assertEqual(
+            closed, {"type": "close_project", "project_id": "alpha", "request_id": "close_1"},
+        )
+        for bad in ("../private", "alpha/../beta", "alpha workspace", ""):
+            with self.assertRaises(ValidationError):
+                validate_message({"type": "close_project", "project_id": bad})
+        with self.assertRaises(ValidationError):
+            validate_message({"type": "close_project"})
+        # A workspace or working directory is never accepted from the client.
+        self.assertNotIn("workspace_id", validate_message({
+            "type": "close_project", "project_id": "alpha",
+            "workspace_id": "w-1", "cwd": "/etc",
+        }))
 
     def test_response_allowlist(self):
         validate_message({"type": "respond", "pane_id": "pane-1", "text": "yes"})

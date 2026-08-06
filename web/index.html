@@ -59,6 +59,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .connection-label { color: var(--muted); font-size: 0.65rem; white-space: nowrap; }
 .agent-filter { padding: 10px 12px 0; }
 .agent-filter input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 14px; }
+.project-launch-button { width: 100%; min-height: 44px; margin-top: 8px; border: 1px solid color-mix(in srgb, var(--blue) 55%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--blue) 8%, var(--surface)); color: var(--blue); font-size: 0.78rem; font-weight: 700; cursor: pointer; }
 
 
 /* Agent list */
@@ -105,6 +106,12 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 .term-input input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 14px; font-family: monospace; min-width: 0; }
 .term-input button { padding: 10px 14px; border-radius: 6px; border: none; background: var(--blue); color: #fff; font-weight: 700; font-size: 16px; flex-shrink: 0; }
 .term-input button:disabled { opacity: 0.55; cursor: wait; }
+.term-input .mic-btn { min-width: 44px; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font-size: 15px; }
+.term-input .mic-btn[aria-pressed="true"] { border-color: var(--red); background: color-mix(in srgb, var(--red) 16%, var(--bg)); color: var(--red); animation: mic-pulse 1.4s ease-in-out infinite; }
+.term-input .mic-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+@keyframes mic-pulse { 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .term-input .mic-btn[aria-pressed="true"] { animation: none; } }
+#termInput.dictating { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
 .command-status { min-height: 18px; padding: 1px 12px 3px; background: var(--surface); color: var(--muted); font-size: 0.68rem; flex-shrink: 0; }
 .command-status.error { color: var(--red); }
 .term-keys { border-top: 1px solid var(--border); padding: 6px 8px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) 46px; gap: 5px; background: var(--surface); flex-shrink: 0; padding-bottom: max(6px, env(safe-area-inset-bottom)); align-items: center; }
@@ -133,6 +140,58 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 0.85rem; }
 
+/* Project launcher */
+.project-launcher { display: none; position: fixed; inset: 0; z-index: 110; align-items: flex-end; }
+.project-launcher.active { display: flex; }
+.project-launcher-backdrop { position: absolute; inset: 0; border: 0; background: rgba(0,0,0,0.58); }
+.project-launcher-panel { position: relative; width: 100%; max-height: 88dvh; display: flex; flex-direction: column; padding-bottom: max(8px, env(safe-area-inset-bottom)); border: 1px solid var(--border); border-bottom: 0; border-radius: 18px 18px 0 0; background: var(--surface); box-shadow: 0 -10px 35px rgba(0,0,0,0.38); }
+.project-launcher-header { min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 8px 12px 6px 16px; border-bottom: 1px solid var(--border); }
+.project-launcher-header div { flex: 1; min-width: 0; }
+.project-launcher-back { display: none; min-width: 44px; height: 44px; padding: 0 8px; border: 0; background: transparent; color: var(--blue); font-size: 0.72rem; font-weight: 700; cursor: pointer; }
+.project-launcher-title { font-size: 0.9rem; font-weight: 700; }
+.project-launcher-subtitle { margin-top: 2px; color: var(--muted); font-size: 0.65rem; }
+.project-launcher-close { width: 44px; height: 44px; border: 0; background: transparent; color: var(--muted); font-size: 1.15rem; cursor: pointer; }
+.project-launcher-search { margin: 10px 12px 4px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); color: var(--text); font-size: 14px; }
+.project-launcher-status { min-height: 22px; padding: 2px 14px 5px; color: var(--muted); font-size: 0.7rem; }
+.project-launcher-status.error { color: var(--red); }
+.project-list { overflow-y: auto; padding: 0 12px 10px; overscroll-behavior: contain; }
+.project-group { margin: 12px 2px 6px; color: var(--muted); font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.project-card { width: 100%; min-height: 64px; margin-bottom: 7px; padding: 11px 12px; display: flex; align-items: center; gap: 10px; text-align: left; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); color: var(--text); cursor: pointer; }
+.project-card:active { background: var(--border); }
+.project-card:disabled { opacity: 0.55; cursor: wait; }
+.project-card.active-project { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.project-card-info { flex: 1; min-width: 0; }
+.project-card-name { display: flex; align-items: center; gap: 7px; font-size: 0.84rem; font-weight: 650; }
+.project-active-pill { padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); font-size: 0.57rem; font-weight: 700; text-transform: uppercase; }
+.project-card-description { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.67rem; }
+.project-card-tabs { display: block; margin-top: 5px; color: color-mix(in srgb, var(--text) 70%, var(--muted)); font-family: monospace; font-size: 0.61rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-card-action { flex-shrink: 0; color: var(--blue); font-size: 0.7rem; font-weight: 700; }
+.agent-choice-intro { padding: 8px 2px 14px; color: var(--muted); font-size: 0.7rem; line-height: 1.45; }
+.agent-choice-card { min-height: 58px; }
+.agent-choice-card .project-card-description { white-space: normal; overflow-wrap: anywhere; }
+.agent-choice-icon { width: 34px; height: 34px; display: grid; place-items: center; flex-shrink: 0; border-radius: 9px; background: color-mix(in srgb, var(--blue) 12%, var(--surface)); color: var(--blue); font-size: 0.72rem; font-weight: 800; }
+.project-section { margin: 14px 2px 6px; color: var(--muted); font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.project-section:first-child { margin-top: 4px; }
+.project-current-pill { padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); font-size: 0.57rem; font-weight: 700; text-transform: uppercase; }
+.project-card.resume-card { border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.project-card.resume-card .project-card-action, .project-card.resume-card .agent-choice-icon { color: var(--green); }
+.project-card.resume-card .agent-choice-icon { background: color-mix(in srgb, var(--green) 12%, var(--surface)); }
+.project-card.danger-card { min-height: 52px; border-color: color-mix(in srgb, var(--red) 55%, var(--border)); background: color-mix(in srgb, var(--red) 7%, var(--bg)); }
+.project-card.danger-card .project-card-name, .project-card.danger-card .project-card-action { color: var(--red); }
+.project-danger-note { padding: 6px 2px 10px; color: var(--muted); font-size: 0.65rem; line-height: 1.45; }
+.project-confirm { display: none; position: fixed; inset: 0; z-index: 130; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,0.62); }
+.project-confirm.active { display: flex; }
+.project-confirm-panel { width: 100%; max-width: 400px; padding: 18px 16px 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 12px 40px rgba(0,0,0,0.45); }
+.project-confirm-title { margin: 0; font-size: 0.95rem; font-weight: 700; }
+.project-confirm-body { margin: 9px 0 0; color: var(--muted); font-size: 0.74rem; line-height: 1.5; overflow-wrap: anywhere; }
+.project-confirm-status { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 0.68rem; }
+.project-confirm-status.error { color: var(--red); }
+.project-confirm-actions { display: flex; gap: 8px; margin-top: 14px; }
+.project-confirm-actions button { flex: 1; min-width: 0; min-height: 46px; padding: 0 10px; border-radius: 10px; font-size: 0.78rem; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; }
+.project-confirm-cancel { border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.project-confirm-danger { border: 1px solid var(--red); background: var(--red); color: #fff; }
+.project-confirm-actions button:disabled { opacity: 0.6; cursor: wait; }
+
 /* Desktop */
 @media (min-width: 768px) {
   body { max-width: 1200px; margin: 0 auto; }
@@ -141,6 +200,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
   .section-header { grid-column: 1 / -1; }
   .term-content { min-height: 300px; }
+  .project-launcher-panel { max-width: 560px; margin: 0 auto; border-radius: 18px 18px 0 0; }
 }
 @media (pointer: fine) {
   .quick-actions button { flex: none; min-width: auto; padding: 8px 18px; }
@@ -231,8 +291,39 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   <div class="agent-filter">
     <label for="agentSearch" style="position:absolute;left:-10000px">Filter sessions</label>
     <input id="agentSearch" type="search" placeholder="Filter sessions or workspaces…" autocomplete="off" />
+    <button class="project-launch-button" onclick="openProjectLauncher()" aria-haspopup="dialog" aria-controls="projectLauncher">＋ Open project</button>
   </div>
   <div class="agents" id="agents"></div>
+</div>
+
+<div class="project-launcher" id="projectLauncher" role="dialog" aria-modal="true" aria-labelledby="projectLauncherTitle">
+  <button class="project-launcher-backdrop" onclick="closeProjectLauncher()" aria-label="Close project launcher"></button>
+  <section class="project-launcher-panel">
+    <div class="project-launcher-header">
+      <button class="project-launcher-back" id="projectLauncherBack" onclick="cancelAgentChoice()" aria-label="Back to projects">‹ Back</button>
+      <div>
+        <div class="project-launcher-title" id="projectLauncherTitle">Open project</div>
+        <div class="project-launcher-subtitle" id="projectLauncherSubtitle">Your Herdr Plus project templates</div>
+      </div>
+      <button class="project-launcher-close" onclick="closeProjectLauncher()" aria-label="Close project launcher">✕</button>
+    </div>
+    <label for="projectSearch" style="position:absolute;left:-10000px">Search projects</label>
+    <input class="project-launcher-search" id="projectSearch" type="search" placeholder="Search projects…" autocomplete="off" oninput="renderProjectLauncher()" />
+    <div class="project-launcher-status" id="projectLauncherStatus" role="status" aria-live="polite"></div>
+    <div class="project-list" id="projectList"></div>
+  </section>
+</div>
+
+<div class="project-confirm" id="projectCloseConfirm" role="alertdialog" aria-modal="true" aria-labelledby="projectCloseTitle" aria-describedby="projectCloseBody">
+  <div class="project-confirm-panel">
+    <h2 class="project-confirm-title" id="projectCloseTitle">Close project?</h2>
+    <p class="project-confirm-body" id="projectCloseBody"></p>
+    <div class="project-confirm-status" id="projectCloseStatus" role="status" aria-live="polite"></div>
+    <div class="project-confirm-actions">
+      <button type="button" class="project-confirm-cancel" id="projectCloseCancel" onclick="cancelProjectClose()">Cancel</button>
+      <button type="button" class="project-confirm-danger" id="projectCloseSubmit" onclick="confirmProjectClose()">Close project</button>
+    </div>
+  </div>
 </div>
 
 <div class="view" id="timelineView" style="display:none;padding:12px;">
@@ -252,6 +343,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   <div class="quick-actions" id="quickActions"></div>
   <form class="term-input" id="termInputForm">
     <input id="termInput" type="text" placeholder="Type…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Message" />
+    <button class="mic-btn" id="micButton" type="button" hidden onclick="toggleDictation()" aria-label="Dictate message" aria-pressed="false" aria-describedby="commandStatus">🎙</button>
     <button id="termSendButton" type="submit" aria-label="Send message">⏎</button>
   </form>
   <div class="command-status" id="commandStatus" role="status" aria-live="polite"></div>
@@ -315,6 +407,7 @@ let timeline = [], prevStatuses = {};
 let activeWorkspace = null;
 let activeTab = null;
 let pendingSubmission = null;
+let dictation = null;
 const pendingControls = new Map();
 let connectionState = 'disconnected', lastAgentUpdate = 0, reconnectTimer = null;
 let pushRelayState = 'not-synced';
@@ -323,6 +416,10 @@ let paneReadInFlight = null, paneRefreshQueued = false, paneHistoryLoaded = fals
 let paneHistoryLoadPending = false;
 let paneUnreadUpdates = 0;
 let lastPaneId = localStorage.getItem('herdr_last_pane') || '';
+let projects = [], projectAgentChoices = [], selectedProjectId = null;
+let projectListPending = null, projectActivationPending = null;
+let projectClosePending = null, projectCloseConfirmId = null;
+let pendingWorkspaceToOpen = null, pendingAgentPaneToOpen = null;
 const PANE_REFRESH_MS = 1500;
 const PANE_READ_TIMEOUT_MS = 18000;
 const DEFAULT_PANE_LINES = 200;
@@ -423,6 +520,7 @@ function connect() {
       failPendingSubmission('Connection lost. Your message was not cleared.');
     }
     failPendingControls('Connection lost before Herdr confirmed the action.');
+    failProjectRequests('Connection lost. Reopen the project list to retry.');
     resetPaneRefresh();
     showPaneLoadError('Connection lost. Reconnecting…');
     reconnectTimer = setTimeout(connect, 3000);
@@ -495,6 +593,343 @@ function showSetup() {
     </p>
   </div>`;
 }
+
+function setProjectLauncherStatus(message, isError=false) {
+  const status = document.getElementById('projectLauncherStatus');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
+}
+
+function openProjectLauncher() {
+  document.getElementById('projectLauncher').classList.add('active');
+  document.getElementById('projectSearch').value = '';
+  selectedProjectId = null;
+  updateProjectLauncherHeader();
+  renderProjectLauncher();
+  requestProjectCatalog();
+}
+
+function closeProjectLauncher() {
+  if (projectClosePending) return;
+  document.getElementById('projectLauncher').classList.remove('active');
+  cancelProjectClose();
+  selectedProjectId = null;
+  updateProjectLauncherHeader();
+}
+
+function updateProjectLauncherHeader() {
+  const project = projects.find(item => item.id === selectedProjectId);
+  const title = !project ? 'Open project' : project.active ? 'Manage project' : 'Choose an agent';
+  document.getElementById('projectLauncherBack').style.display = project ? 'block' : 'none';
+  document.getElementById('projectLauncherTitle').textContent = title;
+  document.getElementById('projectLauncherSubtitle').textContent = project ? project.name : 'Your Herdr Plus project templates';
+  document.getElementById('projectSearch').style.display = project ? 'none' : '';
+}
+
+function cancelAgentChoice() {
+  if (projectActivationPending || projectClosePending) return;
+  selectedProjectId = null;
+  updateProjectLauncherHeader();
+  setProjectLauncherStatus(`${projects.length} projects available`);
+  renderProjectLauncher();
+}
+
+function requestProjectCatalog() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setProjectLauncherStatus('Connect to the relay to load projects.', true);
+    return;
+  }
+  if (projectListPending) return;
+  const requestId = `projects_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const timeout = setTimeout(() => {
+    if (projectListPending?.requestId !== requestId) return;
+    projectListPending = null;
+    setProjectLauncherStatus('Project list timed out. Tap Open project to retry.', true);
+  }, 15000);
+  projectListPending = {requestId, timeout};
+  setProjectLauncherStatus('Loading projects…');
+  ws.send(JSON.stringify({type:'list_projects', request_id:requestId}));
+}
+
+function agentLabelFor(agentKind) {
+  return projectAgentChoices.find(agent => agent.id === agentKind)?.label || agentKind || 'Agent';
+}
+
+function projectBusy() {
+  return Boolean(projectActivationPending || projectClosePending);
+}
+
+function agentStartCard(project, agent, startNew) {
+  const encodedProject = encodeURIComponent(project.id).replace(/'/g, '%27');
+  const encodedAgent = encodeURIComponent(agent.id).replace(/'/g, '%27');
+  const pending = projectActivationPending?.agentKind === agent.id && projectActivationPending?.startNew === startNew;
+  const isCurrent = startNew && project.agent === agent.id;
+  const currentPill = isCurrent ? '<span class="project-current-pill">Current</span>' : '';
+  const description = pending
+    ? 'Starting and waiting for Herdr…'
+    : startNew
+      ? 'Opens a new Herdr tab. Existing agents keep running.'
+      : 'Start a new agent session';
+  return `<button type="button" class="project-card agent-choice-card" onclick="activateProjectFromPhone(decodeURIComponent('${encodedProject}'), decodeURIComponent('${encodedAgent}'), ${startNew})" ${projectBusy()?'disabled':''} aria-label="Start ${h(agent.label)}${isCurrent?' (another instance)':''} in ${h(project.name)}">
+    <span class="agent-choice-icon" aria-hidden="true">${h(agent.label.slice(0,2).toUpperCase())}</span>
+    <span class="project-card-info"><span class="project-card-name">${h(agent.label)} ${currentPill}</span><span class="project-card-description">${h(description)}</span></span>
+    <span class="project-card-action" aria-hidden="true">${pending?'Starting…':'Start ›'}</span>
+  </button>`;
+}
+
+function renderActiveProject(project) {
+  const encodedProject = encodeURIComponent(project.id).replace(/'/g, '%27');
+  const resumePending = Boolean(projectActivationPending && !projectActivationPending.startNew);
+  const resume = project.has_agent
+    ? `<button type="button" class="project-card resume-card" onclick="activateProjectFromPhone(decodeURIComponent('${encodedProject}'), decodeURIComponent('${encodeURIComponent(project.agent || '').replace(/'/g, '%27')}'), false)" ${projectBusy()?'disabled':''} aria-label="Resume ${h(agentLabelFor(project.agent))} in ${h(project.name)}">
+        <span class="agent-choice-icon" aria-hidden="true">${h(agentLabelFor(project.agent).slice(0,2).toUpperCase())}</span>
+        <span class="project-card-info"><span class="project-card-name">${h(agentLabelFor(project.agent))} <span class="project-current-pill">Current</span></span><span class="project-card-description">${resumePending?'Reopening this session…':'Reopen this running session'}</span></span>
+        <span class="project-card-action" aria-hidden="true">${resumePending?'Resuming…':'Resume ›'}</span>
+      </button>`
+    : '<div class="project-danger-note">No agent is running in this workspace yet.</div>';
+  const startHeading = project.has_agent ? 'Start another agent' : 'Start an agent';
+  const choices = projectAgentChoices.length
+    ? projectAgentChoices.map(agent => agentStartCard(project, agent, true)).join('')
+    : '<div class="project-danger-note">No supported agents are installed on this host.</div>';
+  return `<div class="project-section">Current agent</div>${resume}
+    <div class="project-section">${h(startHeading)}</div>${choices}
+    <div class="project-section">Danger zone</div>
+    <button type="button" class="project-card danger-card" onclick="requestProjectClose(decodeURIComponent('${encodedProject}'))" ${projectBusy()?'disabled':''} aria-haspopup="dialog" aria-controls="projectCloseConfirm" aria-label="Close the ${h(project.name)} project workspace">
+      <span class="project-card-info"><span class="project-card-name">Close project</span></span>
+      <span class="project-card-action" aria-hidden="true">${projectClosePending?'Closing…':'Close ›'}</span>
+    </button>
+    <p class="project-danger-note">Closing ends every pane and running process in this Herdr workspace.</p>`;
+}
+
+function renderProjectLauncher() {
+  const list = document.getElementById('projectList');
+  const selectedProject = projects.find(project => project.id === selectedProjectId);
+  if (selectedProject?.active) {
+    list.innerHTML = renderActiveProject(selectedProject);
+    return;
+  }
+  if (selectedProject) {
+    if (!projectAgentChoices.length) {
+      list.innerHTML = '<div class="empty" style="padding:34px 18px">No supported agents are installed on this host.</div>';
+      return;
+    }
+    const intro = `<div class="agent-choice-intro">Start an agent in <strong>${h(selectedProject.name)}</strong>. Herdr waits until it is detected before opening it on your phone.</div>`;
+    const choices = projectAgentChoices.map(agent => agentStartCard(selectedProject, agent, false)).join('');
+    list.innerHTML = intro + choices;
+    return;
+  }
+  const query = document.getElementById('projectSearch').value.trim().toLowerCase();
+  const filtered = projects.filter(project => [
+    project.name, project.description, project.group, ...(project.tabs || [])
+  ].some(value => String(value || '').toLowerCase().includes(query)));
+  if (!filtered.length) {
+    const message = projects.length ? 'No projects match your search.' : projectListPending ? 'Loading your Herdr Plus projects…' : 'No project templates found.';
+    list.innerHTML = `<div class="empty" style="padding:34px 18px">${h(message)}</div>`;
+    return;
+  }
+  const groups = new Map();
+  for (const project of filtered) {
+    const group = project.group || 'Ungrouped';
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(project);
+  }
+  list.innerHTML = [...groups.entries()].map(([group, groupedProjects]) => {
+    const cards = groupedProjects.map(project => {
+      const encodedId = encodeURIComponent(project.id).replace(/'/g, '%27');
+      const pending = projectActivationPending?.projectId === project.id;
+      const action = pending ? 'Opening…' : project.active ? 'Manage' : 'Choose agent';
+      const activePill = project.active ? '<span class="project-active-pill">Active</span>' : '';
+      return `<button type="button" class="project-card${project.active?' active-project':''}" onclick="chooseProjectAgent(decodeURIComponent('${encodedId}'))" ${projectBusy()?'disabled':''} aria-label="${h(action)} ${h(project.name)}">
+        <span class="project-card-info">
+          <span class="project-card-name">${h(project.name)} ${activePill}</span>
+          <span class="project-card-description">${h(project.description || 'Herdr Plus project')}</span>
+          <span class="project-card-tabs">${h((project.tabs || []).join(' · '))}</span>
+        </span>
+        <span class="project-card-action" aria-hidden="true">${h(action)} ›</span>
+      </button>`;
+    }).join('');
+    return `<div class="project-group">${h(group)}</div>${cards}`;
+  }).join('');
+}
+
+function chooseProjectAgent(projectId) {
+  if (projectBusy()) return;
+  const project = projects.find(item => item.id === projectId);
+  if (!project) return;
+  selectedProjectId = projectId;
+  updateProjectLauncherHeader();
+  setProjectLauncherStatus(project.active ? 'Resume, start another agent, or close this project.' : 'Choose an agent to start.');
+  renderProjectLauncher();
+}
+
+function activateProjectFromPhone(projectId, agentKind, startNew=false) {
+  if (projectBusy() || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const project = projects.find(item => item.id === projectId);
+  const agent = projectAgentChoices.find(item => item.id === agentKind) || (project?.has_agent ? {id:agentKind, label:agentKind} : null);
+  if (!project || !agent) return;
+  const resuming = !startNew && project.has_agent;
+  const requestId = `activate_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const timeout = setTimeout(() => {
+    if (projectActivationPending?.requestId !== requestId) return;
+    projectActivationPending = null;
+    setProjectLauncherStatus(
+      startNew
+        ? `Starting ${agent.label} timed out. It may still be starting in Herdr.`
+        : 'Opening the project timed out. The workspace may still be starting.',
+      true,
+    );
+    renderProjectLauncher();
+  }, 60000);
+  projectActivationPending = {requestId, projectId, agentKind, startNew, timeout};
+  setProjectLauncherStatus(resuming ? `Resuming ${project.name}…` : `Starting ${agent.label} in ${project.name}…`);
+  renderProjectLauncher();
+  ws.send(JSON.stringify({
+    type:'activate_project', project_id:projectId, agent:agentKind,
+    start_new:startNew, request_id:requestId,
+  }));
+}
+
+function requestProjectClose(projectId) {
+  if (projectBusy()) return;
+  const project = projects.find(item => item.id === projectId);
+  if (!project || !project.active) return;
+  projectCloseConfirmId = projectId;
+  document.getElementById('projectCloseBody').textContent =
+    `Every pane and running process in the ${project.name} Herdr workspace will be terminated, including agents, servers, and unsaved shell work. This cannot be undone.`;
+  setProjectCloseStatus('');
+  document.getElementById('projectCloseConfirm').classList.add('active');
+  document.getElementById('projectCloseSubmit').focus();
+}
+
+function setProjectCloseStatus(message, isError=false) {
+  const status = document.getElementById('projectCloseStatus');
+  status.textContent = message;
+  status.classList.toggle('error', isError);
+}
+
+function cancelProjectClose() {
+  if (projectClosePending) return;
+  projectCloseConfirmId = null;
+  document.getElementById('projectCloseConfirm').classList.remove('active');
+}
+
+function confirmProjectClose() {
+  if (projectClosePending || !projectCloseConfirmId) return;
+  const projectId = projectCloseConfirmId;
+  const project = projects.find(item => item.id === projectId);
+  if (!project) return cancelProjectClose();
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setProjectCloseStatus('Connect to the relay to close this project.', true);
+    return;
+  }
+  const requestId = `close_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const timeout = setTimeout(() => {
+    if (projectClosePending?.requestId !== requestId) return;
+    projectClosePending = null;
+    setProjectCloseButtons(false);
+    setProjectCloseStatus('Closing timed out. The workspace may still be shutting down.', true);
+    renderProjectLauncher();
+  }, 30000);
+  projectClosePending = {requestId, projectId, timeout};
+  setProjectCloseButtons(true);
+  setProjectCloseStatus(`Closing ${project.name}…`);
+  renderProjectLauncher();
+  ws.send(JSON.stringify({type:'close_project', project_id:projectId, request_id:requestId}));
+}
+
+function setProjectCloseButtons(busy) {
+  document.getElementById('projectCloseSubmit').disabled = busy;
+  document.getElementById('projectCloseCancel').disabled = busy;
+  document.getElementById('projectCloseSubmit').textContent = busy ? 'Closing…' : 'Close project';
+}
+
+function finishProjectClose(message) {
+  if (!projectClosePending || message.request_id !== projectClosePending.requestId) return;
+  const pending = projectClosePending;
+  clearTimeout(pending.timeout);
+  projectClosePending = null;
+  setProjectCloseButtons(false);
+  const project = projects.find(item => item.id === pending.projectId);
+  if (!message.ok) {
+    setProjectCloseStatus(message.error || 'Could not close project.', true);
+    renderProjectLauncher();
+    return;
+  }
+  if (project) {
+    if (activeWorkspace && activeWorkspace === project.workspace_id) {
+      activeWorkspace = null;
+      activeTab = null;
+    }
+    project.active = false;
+    project.has_agent = false;
+    project.agent = '';
+    project.workspace_id = '';
+  }
+  setProjectCloseStatus(message.already_closed ? 'This project was already closed.' : 'Project closed.');
+  setTimeout(() => {
+    cancelProjectClose();
+    selectedProjectId = null;
+    closeProjectLauncher();
+    render();
+    requestProjectCatalog();
+  }, 650);
+}
+
+function finishProjectActivation(message) {
+  if (!projectActivationPending || message.request_id !== projectActivationPending.requestId) return;
+  const pending = projectActivationPending;
+  clearTimeout(pending.timeout);
+  projectActivationPending = null;
+  const project = projects.find(item => item.id === pending.projectId);
+  if (!message.ok) {
+    setProjectLauncherStatus(message.error || 'Could not open project.', true);
+    renderProjectLauncher();
+    return;
+  }
+  if (project) {
+    project.active = true;
+    project.has_agent = true;
+    project.agent = message.agent;
+  }
+  pendingAgentPaneToOpen = message.pane_id || null;
+  const workspaceVisible = agents.some(agent => agent.workspace_id === message.workspace_id);
+  if (workspaceVisible) {
+    activeWorkspace = message.workspace_id;
+    activeTab = null;
+  } else {
+    pendingWorkspaceToOpen = message.workspace_id;
+  }
+  const agentLabel = agentLabelFor(message.agent);
+  const started = message.started_new
+    ? `${agentLabel} started in a new tab. Existing agents are still running.`
+    : message.agent_started
+      ? `${agentLabel} started in ${project?.name || 'project'}.`
+      : `Resuming ${project?.name || 'project'}.`;
+  setProjectLauncherStatus(started);
+  renderProjectLauncher();
+  setTimeout(() => {
+    closeProjectLauncher();
+    render();
+  }, 650);
+}
+
+function failProjectRequests(message) {
+  if (projectListPending) clearTimeout(projectListPending.timeout);
+  if (projectActivationPending) clearTimeout(projectActivationPending.timeout);
+  if (projectClosePending) clearTimeout(projectClosePending.timeout);
+  projectListPending = null;
+  projectActivationPending = null;
+  if (projectClosePending) {
+    projectClosePending = null;
+    setProjectCloseButtons(false);
+    setProjectCloseStatus(message, true);
+  }
+  if (document.getElementById('projectLauncher').classList.contains('active')) {
+    setProjectLauncherStatus(message, true);
+    renderProjectLauncher();
+  }
+}
+
 function tryDemo() {
   localStorage.setItem('herdr_relay_url', 'wss://herdr-remote-demo.yyrzrh5wfg.workers.dev');
   localStorage.removeItem('herdr_relay_token');
@@ -515,7 +950,19 @@ function handleMessage(msg) {
       }
       prevStatuses[a.pane_id] = a.status;
     }
-    agents = msg.agents; render();
+    agents = msg.agents;
+    if (pendingWorkspaceToOpen && agents.some(agent => agent.workspace_id === pendingWorkspaceToOpen)) {
+      activeWorkspace = pendingWorkspaceToOpen;
+      activeTab = null;
+      pendingWorkspaceToOpen = null;
+    }
+    render();
+    if (pendingAgentPaneToOpen && agents.some(agent => agent.pane_id === pendingAgentPaneToOpen)) {
+      const paneId = pendingAgentPaneToOpen;
+      pendingAgentPaneToOpen = null;
+      openTerminal(paneId);
+      return;
+    }
     openRequestedPane();
   }
   else if (msg.type === 'agent_update') {
@@ -546,7 +993,7 @@ function handleMessage(msg) {
     const isHistoryPageResponse = isHistoryResponse && paneHistoryLoadPending;
     if (!responseRequestId || !finishPaneRead(responseRequestId) || msg.pane_id !== activePane) return;
     const el = document.getElementById('termContent');
-    const content = msg.content || '(empty)';
+    const content = sanitizePaneContent(msg.content || '(empty)');
     el.classList.remove('load-error');
     if (el.textContent === content) {
       if (isHistoryResponse) requestAnimationFrame(() => { paneHistoryLoadPending = false; });
@@ -565,6 +1012,17 @@ function handleMessage(msg) {
     }
     updateLivePill();
     if (isHistoryResponse) requestAnimationFrame(() => { paneHistoryLoadPending = false; });
+  } else if (msg.type === 'projects' && projectListPending?.requestId === msg.request_id) {
+    clearTimeout(projectListPending.timeout);
+    projectListPending = null;
+    projects = Array.isArray(msg.projects) ? msg.projects : [];
+    projectAgentChoices = Array.isArray(msg.agents) ? msg.agents : [];
+    setProjectLauncherStatus(msg.error || `${projects.length} projects available`, Boolean(msg.error));
+    renderProjectLauncher();
+  } else if (msg.type === 'project_activated') {
+    finishProjectActivation(msg);
+  } else if (msg.type === 'project_closed') {
+    finishProjectClose(msg);
   } else if (msg.type === 'command_result') {
     handleCommandResult(msg);
   } else if (msg.type === 'push_subscribed') {
@@ -798,10 +1256,11 @@ function openTerminal(paneId) {
     ak.innerHTML='';
   }
   refreshPane();
-  refreshInterval = setInterval(refreshPane, PANE_REFRESH_MS);
+  refreshInterval = setInterval(() => refreshPane({periodic: true}), PANE_REFRESH_MS);
 }
 
 function closeTerminal() {
+  abortDictation();
   activePane = null; clearInterval(refreshInterval);
   resetPaneRefresh();
   paneUnreadUpdates = 0;
@@ -830,6 +1289,9 @@ function jumpToLive() {
   const el = document.getElementById('termContent');
   userScrolledUp = false;
   paneUnreadUpdates = 0;
+  // Back to the cheap viewport read; history is re-fetched only on request.
+  paneHistoryLoaded = false;
+  paneLines = DEFAULT_PANE_LINES;
   el.scrollTop = el.scrollHeight;
   updateLivePill();
 }
@@ -845,6 +1307,12 @@ function showPaneLoadError(message) {
   if (content.textContent !== 'Loading…' && !content.classList.contains('load-error')) return;
   content.textContent = message;
   content.classList.add('load-error');
+}
+function sanitizePaneContent(content) {
+  return content
+    .split('\n')
+    .filter(line => !/^[ \t]*(?:[\u2580\u2584]{20,}|\u2500{20,})[ \t]*$/u.test(line))
+    .join('\n');
 }
 function resolvePaneResponseRequestId(message) {
   if (message.request_id) return message.request_id;
@@ -867,15 +1335,24 @@ function queuePaneRefresh() {
   }
   refreshPane();
 }
-function refreshPane() {
+function refreshPane({periodic = false} = {}) {
   if (!ws || ws.readyState !== WebSocket.OPEN || !activePane) return;
   if (paneReadInFlight) return;
+  // Re-reading the whole scrollback every tick is expensive enough to hang
+  // Herdr. History is fetched on request only; the timer never asks for it.
+  if (periodic && paneHistoryLoaded) return;
   const requestId = `pane_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
   const paneId = activePane;
   const source = paneHistoryLoaded ? 'recent' : 'visible';
   const timeout = setTimeout(() => {
     if (paneReadInFlight?.requestId !== requestId) return;
-    if (paneReadInFlight.source === 'recent') paneHistoryLoadPending = false;
+    if (paneReadInFlight.source === 'recent') {
+      // A history read that timed out will time out again; fall back to the
+      // viewport rather than asking Herdr for the same expensive snapshot.
+      paneHistoryLoadPending = false;
+      paneHistoryLoaded = false;
+      paneLines = DEFAULT_PANE_LINES;
+    }
     paneReadInFlight = null;
     showPaneLoadError('Terminal is taking too long to respond. Retrying…');
     const refreshAgain = paneRefreshQueued;
@@ -938,8 +1415,186 @@ function handleCommandResult(msg) {
   }
 }
 function sendText() {
+  abortDictation();
   const input=document.getElementById('termInput');
   submitTextValue(input.value, true);
+}
+
+/* Dictation: speech is transcribed into the message box for review. It is never
+   sent automatically, and the transcript is never logged. */
+function speechRecognizerClass() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function setupDictation() {
+  if (!speechRecognizerClass() || !window.isSecureContext) return;
+  document.getElementById('micButton').hidden = false;
+}
+
+function setDictationButton(listening) {
+  const button = document.getElementById('micButton');
+  button.setAttribute('aria-pressed', listening ? 'true' : 'false');
+  button.setAttribute('aria-label', listening ? 'Stop dictating' : 'Dictate message');
+  button.textContent = listening ? '⏹' : '🎙';
+  document.getElementById('termInput').classList.toggle('dictating', listening);
+}
+
+function toggleDictation() {
+  if (dictation) { stopDictation(); return; }
+  startDictation();
+}
+
+function startDictation() {
+  const Recognizer = speechRecognizerClass();
+  if (!Recognizer || dictation || !activePane) return;
+  if (!microphoneIsPermittedHere()) {
+    setCommandStatus('This page is not allowed to use the microphone. Update the relay so it permits dictation.', true);
+    return;
+  }
+  const recognition = new Recognizer();
+  recognition.lang = navigator.language || 'en-US';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onresult = handleDictationResult;
+  recognition.onerror = (event) => failDictation(dictationErrorMessage(event.error));
+  recognition.onend = endDictation;
+  dictation = {recognition, base: document.getElementById('termInput').value, finals: [], error: ''};
+  try {
+    recognition.start();
+  } catch (error) {
+    dictation = null;
+    setCommandStatus('Could not start dictation.', true);
+    return;
+  }
+  setDictationButton(true);
+  setCommandStatus('Listening… tap the mic to stop.');
+}
+
+/* `event.results` is the whole session so far and the engine re-delivers results
+   as it revises them. Store each final by its own index — appending duplicates
+   every re-delivered phrase. */
+function handleDictationResult(event) {
+  if (!dictation) return;
+  let interim = '';
+  for (let index = 0; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    if (result.isFinal) dictation.finals[index] = result[0].transcript;
+    else interim = mergeSpeech(interim, result[0].transcript);
+  }
+  applyDictationTranscript(mergeSpeech(dictationTranscript(), interim));
+}
+
+function dictationTranscript() {
+  if (!dictation) return '';
+  let text = '';
+  for (const piece of dictation.finals) {
+    if (piece) text = mergeSpeech(text, piece);
+  }
+  return text;
+}
+
+/* Engines differ: some emit each phrase once, others restate the whole utterance
+   in every result. Fold rather than concatenate so a restatement replaces what
+   it repeats instead of stacking up. */
+function mergeSpeech(text, piece) {
+  const current = tidySpeech(text);
+  const next = tidySpeech(piece);
+  if (!current) return next;
+  if (!next) return current;
+  const currentKey = current.toLowerCase();
+  const nextKey = next.toLowerCase();
+  if (nextKey.startsWith(currentKey)) return next;
+  if (currentKey.endsWith(nextKey)) return current;
+  const currentWords = current.split(' ');
+  const nextWords = next.split(' ');
+  for (let size = Math.min(currentWords.length, nextWords.length); size > 0; size -= 1) {
+    const tail = currentWords.slice(currentWords.length - size).join(' ').toLowerCase();
+    if (tail === nextWords.slice(0, size).join(' ').toLowerCase()) {
+      return [...currentWords, ...nextWords.slice(size)].join(' ');
+    }
+  }
+  return `${current} ${next}`;
+}
+
+function tidySpeech(text) {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function applyDictationTranscript(spoken) {
+  const tidy = tidySpeech(spoken);
+  const base = dictation.base;
+  const separator = base && tidy && !/\s$/.test(base) ? ' ' : '';
+  document.getElementById('termInput').value = `${base}${separator}${tidy}`;
+}
+
+function stopDictation() {
+  if (!dictation || dictation.stopping) return;
+  dictation.stopping = true;
+  setCommandStatus('Finishing…');
+  try {
+    dictation.recognition.stop();
+  } catch (error) {
+    endDictation();
+  }
+}
+
+function failDictation(message) {
+  if (!dictation) return;
+  const recognition = dictation.recognition;
+  dictation.error = message;
+  endDictation();
+  try {
+    recognition.abort();
+  } catch (error) { /* the session had already ended */ }
+}
+
+function endDictation() {
+  if (!dictation) return;
+  const error = dictation.error;
+  const spoken = dictationTranscript();
+  if (spoken) applyDictationTranscript(spoken);
+  dictation = null;
+  setDictationButton(false);
+  if (error) {
+    setCommandStatus(error, true);
+    return;
+  }
+  setCommandStatus(spoken ? 'Dictated. Review, then send.' : 'No speech detected.', !spoken);
+  if (spoken) document.getElementById('termInput').focus();
+}
+
+/* Discard an in-flight transcript so late results cannot refill a cleared box. */
+function abortDictation() {
+  if (!dictation) return;
+  const recognition = dictation.recognition;
+  dictation = null;
+  setDictationButton(false);
+  try {
+    recognition.abort();
+  } catch (error) { /* the session had already ended */ }
+}
+
+/* A Permissions-Policy header denies the mic before any prompt appears, which
+   otherwise looks identical to the user refusing it. */
+function microphoneIsPermittedHere() {
+  if (!document.featurePolicy?.allowsFeature) return true;
+  return document.featurePolicy.allowsFeature('microphone');
+}
+
+function dictationErrorMessage(code) {
+  if (code === 'aborted') return '';
+  if (code === 'not-allowed') {
+    return microphoneIsPermittedHere()
+      ? 'Microphone blocked. Allow it for this site, and check your OS microphone privacy settings.'
+      : 'This page is not allowed to use the microphone. Update the relay so it permits dictation.';
+  }
+  if (code === 'service-not-allowed') {
+    return 'The browser refused speech recognition for this page.';
+  }
+  if (code === 'no-speech') return 'No speech detected. Tap the mic and try again.';
+  if (code === 'audio-capture') return 'No microphone was found.';
+  if (code === 'network') return 'Dictation needs a network connection.';
+  return 'Dictation stopped unexpectedly.';
 }
 function toggleQuickDock() {
   const el = document.getElementById('quickDock');
@@ -1007,10 +1662,21 @@ document.getElementById('termInputForm').addEventListener('submit', event => {
   sendText();
 });
 document.getElementById('agentSearch').addEventListener('input', render);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.getElementById('projectLauncher').classList.contains('active')) {
+    closeProjectLauncher();
+  }
+});
 document.getElementById('termContent').addEventListener('scroll', function() {
   const el = this;
   userScrolledUp = (el.scrollHeight - el.scrollTop - el.clientHeight) > 50;
-  if (!userScrolledUp) paneUnreadUpdates = 0;
+  if (!userScrolledUp) {
+    paneUnreadUpdates = 0;
+    // Back at the live edge by any route: leave history mode so polling
+    // returns to the cheap viewport read.
+    paneHistoryLoaded = false;
+    paneLines = DEFAULT_PANE_LINES;
+  }
   updateLivePill();
   if (el.scrollTop === 0 && paneLines < 5000) loadMore();
 });
@@ -1406,6 +2072,7 @@ screen.orientation?.addEventListener('change', () => {
 });
 
 async function startApp() {
+  setupDictation();
   await lockPortraitOrientation();
   const pairingHandled = await consumePairingFragment();
   if (!pairingHandled) {

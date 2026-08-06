@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0", "qrcode>=8.0"]
+# dependencies = ["websockets>=14.0", "zeroconf>=0.80.0", "pywebpush>=2.0.0", "py-vapid>=1.9.0", "qrcode>=8.0", "tomli>=2.0.0; python_version < '3.11'"]
 # ///
 """herdr-remote relay — polls herdr, exposes HTTP/WebSocket APIs, and broadcasts to clients."""
-import asyncio, base64, io, json, logging, os, re, shutil, signal, socket, subprocess, time, urllib.parse
+import asyncio, base64, io, json, logging, os, re, shutil, signal, socket, subprocess, threading, time, urllib.parse
 
 try:
     from websockets.asyncio.server import serve
@@ -17,6 +17,10 @@ from relay_security import (
 )
 from pairing import PairingError, PairingManager
 from herdr_compat import parse_pane_list
+from project_catalog import (
+    ProjectCatalogError, activate_project, available_agents, close_project,
+    discover_projects_dir, list_workspaces, load_projects, public_projects,
+)
 from vapid_keys import ensure_vapid_keys
 
 from logging.handlers import RotatingFileHandler
@@ -79,6 +83,13 @@ PUSH_SUBS_FILE = os.path.join(LOG_DIR, "push_subs.json")
 
 # Remote hosts: comma-separated SSH targets
 REMOTES = [r.strip() for r in os.environ.get("HERDR_REMOTES", "").split(",") if r.strip()]
+PROJECTS_DIR_OVERRIDE = os.environ.get("HERDR_PLUS_PROJECTS_DIR", "")
+TRACE_HERDR = os.environ.get("HERDR_TRACE_HERDR", "") == "1"
+# A viewport read returns in milliseconds; assembling scrollback can take far
+# longer, and killing Herdr mid-snapshot disturbs the pane it is rendering.
+PANE_READ_TIMEOUT = 15
+PANE_HISTORY_TIMEOUT = 45
+SAFE_TRACE_ID_RE = re.compile(r"[A-Za-z0-9:._-]{1,64}")
 
 TOOL_OPTIONS = ["yes, single permission", "trust, always allow", "no (tab to edit)"]
 SUBAGENT_OPTIONS = ["approve all pending", "configure individually", "exit (cancel subagents)"]
@@ -101,6 +112,8 @@ last_agent_count = 0
 pairing_limiter = SlidingWindowLimiter(12, 120)
 auth_failure_limiter = SlidingWindowLimiter(30, 60)
 command_limiter = SlidingWindowLimiter(120, 10)
+project_limiter = SlidingWindowLimiter(6, 60)
+project_activation_lock = threading.Lock()
 
 # --- Audit logging ---
 _audit_handler = RotatingFileHandler(AUDIT_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
@@ -131,7 +144,8 @@ def _security_header_items():
     return [
         ("X-Content-Type-Options", "nosniff"),
         ("Referrer-Policy", "no-referrer"),
-        ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+        # The app itself dictates into the message box; camera and location stay off.
+        ("Permissions-Policy", "camera=(), microphone=(self), geolocation=()"),
         ("Cross-Origin-Opener-Policy", "same-origin"),
         ("Content-Security-Policy", (
             "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
@@ -307,21 +321,41 @@ async def send_web_push(
 _load_push_subs()
 
 
-def run_herdr_result(*args, remote=None):
+def trace_herdr_call(args, started_at, ok):
+    """Record command shape and timing only.
+
+    Opt-in via HERDR_TRACE_HERDR=1 to correlate relay activity against Herdr's
+    own log. Arguments are never recorded beyond the subcommand and an
+    identifier, because they may carry user text.
+    """
+    if not TRACE_HERDR:
+        return
+    target = args[2] if len(args) > 2 and SAFE_TRACE_ID_RE.fullmatch(str(args[2])) else ""
+    log.info(
+        "herdr-trace cmd=%s target=%s duration_ms=%.1f ok=%s",
+        " ".join(str(part) for part in args[:2]), target,
+        (time.monotonic() - started_at) * 1000, ok,
+    )
+
+
+def run_herdr_result(*args, remote=None, timeout=15):
     """Run Herdr without logging command arguments, which may contain user input."""
+    started_at = time.monotonic()
     try:
         if remote:
             cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", remote, HERDR, *args]
         else:
             cmd = [HERDR, *args]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        trace_herdr_call(args, started_at, r.returncode == 0)
         return r.returncode == 0, r.stdout.strip()
     except (OSError, subprocess.SubprocessError):
+        trace_herdr_call(args, started_at, False)
         return False, ""
 
 
-def run_herdr(*args, remote=None):
-    ok, output = run_herdr_result(*args, remote=remote)
+def run_herdr(*args, remote=None, timeout=15):
+    ok, output = run_herdr_result(*args, remote=remote, timeout=timeout)
     return output if ok else ""
 
 
@@ -336,6 +370,31 @@ def command_result(action: str, pane_id: str, ok: bool, request_id=None) -> dict
     if request_id:
         result["request_id"] = request_id
     return result
+
+
+def project_catalog() -> dict:
+    projects_dir = discover_projects_dir(run_herdr_result, PROJECTS_DIR_OVERRIDE)
+    _, active_agents = query_agents_from_host()
+    return {
+        "projects": public_projects(
+            load_projects(projects_dir), list_workspaces(run_herdr_result), active_agents,
+        ),
+        "agents": available_agents(run_herdr_result),
+    }
+
+
+def open_project(project_id: str, agent_kind: str, start_new: bool = False) -> dict:
+    projects_dir = discover_projects_dir(run_herdr_result, PROJECTS_DIR_OVERRIDE)
+    with project_activation_lock:
+        return activate_project(
+            project_id, agent_kind, projects_dir, run_herdr_result, start_new=start_new,
+        )
+
+
+def shutdown_project(project_id: str) -> dict:
+    projects_dir = discover_projects_dir(run_herdr_result, PROJECTS_DIR_OVERRIDE)
+    with project_activation_lock:
+        return close_project(project_id, projects_dir, run_herdr_result)
 
 
 def proxy_status(request_host: str, request_headers) -> str:
@@ -775,6 +834,8 @@ async def handle_client(ws):
             required_scope = {
                 "respond": "control", "send_keys": "control", "send_text": "control",
                 "submit_text": "control", "create_tab": "control",
+                "activate_project": "control", "close_project": "control",
+                "list_projects": "read",
                 "read_pane": "read", "agent_event": "events",
                 "push_subscribe": "push", "push_unsubscribe": "push", "push_quiet": "push",
             }[msg_type]
@@ -784,7 +845,10 @@ async def handle_client(ws):
                         msg_type, msg["pane_id"], False, msg.get("request_id")
                     )))
                     continue
-                await ws.send(json.dumps({"type": "error", "message": "not authorized for this action"}))
+                error = {"type": "error", "message": "not authorized for this action"}
+                if msg.get("request_id"):
+                    error["request_id"] = msg["request_id"]
+                await ws.send(json.dumps(error))
                 continue
             if msg_type in {"respond", "send_keys", "send_text", "submit_text"}:
                 limiter_key = getattr(auth, "device_id", "") or f"{getattr(auth, 'role', 'client')}:{ip}"
@@ -826,6 +890,7 @@ async def handle_client(ws):
                 content = await asyncio.to_thread(
                     run_herdr, "pane", "read", pane_id, "--lines", str(lines),
                     "--source", source, remote=remote,
+                    timeout=PANE_HISTORY_TIMEOUT if source == "recent" else PANE_READ_TIMEOUT,
                 )
                 response = {"type": "pane_content", "pane_id": pane_id, "content": content}
                 if request_id:
@@ -888,6 +953,101 @@ async def handle_client(ws):
                 audit("create_tab", ip, device, "", f"workspace={workspace_id}")
                 ok, _ = run_herdr_result("tab", "create", "--workspace", workspace_id, "--focus")
                 await ws.send(json.dumps({"type": "tab_created", "ok": ok, "request_id": msg.get("request_id")}))
+            elif msg_type == "list_projects":
+                try:
+                    catalog = await asyncio.to_thread(project_catalog)
+                    await ws.send(json.dumps({
+                        "type": "projects", **catalog,
+                        "request_id": msg.get("request_id"),
+                    }))
+                except ProjectCatalogError as exc:
+                    await ws.send(json.dumps({
+                        "type": "projects", "projects": [], "error": str(exc),
+                        "request_id": msg.get("request_id"),
+                    }))
+                except Exception:
+                    log.exception("Could not load Herdr Plus project catalog")
+                    await ws.send(json.dumps({
+                        "type": "projects", "projects": [],
+                        "error": "Project catalog is unavailable",
+                        "request_id": msg.get("request_id"),
+                    }))
+            elif msg_type == "activate_project":
+                limiter_key = getattr(auth, "device_id", "") or f"{getattr(auth, 'role', 'client')}:{ip}"
+                request_id = msg.get("request_id")
+                project_id = msg["project_id"]
+                agent_kind = msg["agent"]
+                start_new = msg.get("start_new", False)
+                if not project_limiter.allow(limiter_key):
+                    await ws.send(json.dumps({
+                        "type": "project_activated", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": "Too many project activations. Try again shortly.",
+                    }))
+                    continue
+                log.info(
+                    "Project activation from %s (%s): project=%s agent=%s start_new=%s",
+                    ip, device, project_id, agent_kind, start_new,
+                )
+                audit(
+                    "activate_project", ip, device, "",
+                    f"project={project_id} agent={agent_kind} start_new={int(start_new)}",
+                )
+                try:
+                    result = await asyncio.to_thread(
+                        open_project, project_id, agent_kind, start_new,
+                    )
+                    await ws.send(json.dumps({
+                        "type": "project_activated", "ok": True,
+                        "project_id": project_id, "request_id": request_id,
+                        **result,
+                    }))
+                except ProjectCatalogError as exc:
+                    await ws.send(json.dumps({
+                        "type": "project_activated", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": str(exc),
+                    }))
+                except Exception:
+                    log.exception("Project activation failed: project=%s", project_id)
+                    await ws.send(json.dumps({
+                        "type": "project_activated", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": "Could not activate project",
+                    }))
+            elif msg_type == "close_project":
+                limiter_key = getattr(auth, "device_id", "") or f"{getattr(auth, 'role', 'client')}:{ip}"
+                request_id = msg.get("request_id")
+                project_id = msg["project_id"]
+                if not project_limiter.allow(limiter_key):
+                    await ws.send(json.dumps({
+                        "type": "project_closed", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": "Too many project changes. Try again shortly.",
+                    }))
+                    continue
+                log.info("Project close from %s (%s): project=%s", ip, device, project_id)
+                audit("close_project", ip, device, "", f"project={project_id}")
+                try:
+                    result = await asyncio.to_thread(shutdown_project, project_id)
+                    await ws.send(json.dumps({
+                        "type": "project_closed", "ok": True,
+                        "project_id": project_id, "request_id": request_id,
+                        **result,
+                    }))
+                except ProjectCatalogError as exc:
+                    await ws.send(json.dumps({
+                        "type": "project_closed", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": str(exc),
+                    }))
+                except Exception:
+                    log.exception("Project close failed: project=%s", project_id)
+                    await ws.send(json.dumps({
+                        "type": "project_closed", "ok": False,
+                        "project_id": project_id, "request_id": request_id,
+                        "error": "Could not close project",
+                    }))
             elif msg_type == "push_subscribe":
                 sub = msg.get("subscription")
                 existing = False
