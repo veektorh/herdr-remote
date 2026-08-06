@@ -816,13 +816,24 @@ async def handle_client(ws):
                 event_queue.put_nowait(msg)
             elif msg_type == "read_pane":
                 pane_id = msg["pane_id"]
+                request_id = msg.get("request_id")
                 if pane_id not in known_panes:
-                    await ws.send(json.dumps({"type": "error", "message": "unknown pane_id"}))
+                    error = {"type": "error", "message": "unknown pane_id"}
+                    if request_id:
+                        error["request_id"] = request_id
+                    await ws.send(json.dumps(error))
                     continue
                 lines = msg["lines"]
+                source = msg["source"]
                 remote = pane_remote_map.get(pane_id)
-                content = run_herdr("pane", "read", pane_id, "--lines", str(lines), "--source", "recent", remote=remote)
-                await ws.send(json.dumps({"type": "pane_content", "pane_id": pane_id, "content": content}))
+                content = await asyncio.to_thread(
+                    run_herdr, "pane", "read", pane_id, "--lines", str(lines),
+                    "--source", source, remote=remote,
+                )
+                response = {"type": "pane_content", "pane_id": pane_id, "content": content}
+                if request_id:
+                    response["request_id"] = request_id
+                await ws.send(json.dumps(response))
             elif msg_type == "send_keys":
                 pane_id = msg["pane_id"]
                 if pane_id not in known_panes:

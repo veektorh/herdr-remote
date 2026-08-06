@@ -159,6 +159,10 @@ def validate_message(message) -> dict:
         if not 1 <= lines <= 5000:
             raise ValidationError("lines must be between 1 and 5000")
         clean["lines"] = lines
+        source = message.get("source", "recent")
+        if source not in {"visible", "recent"}:
+            raise ValidationError("source must be visible or recent")
+        clean["source"] = source
     elif message_type == "send_keys":
         keys = message.get("keys")
         if not isinstance(keys, list) or not 1 <= len(keys) <= 16:

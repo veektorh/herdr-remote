@@ -71,6 +71,20 @@ class RelaySecurityTests(unittest.TestCase):
             validate_message({"type": "send_keys", "pane_id": "pane-1", "keys": ["F12"]})
         with self.assertRaises(ValidationError):
             validate_message({"type": "read_pane", "pane_id": "pane-1", "lines": 5001})
+        self.assertEqual(
+            validate_message({"type": "read_pane", "pane_id": "pane-1"})["source"],
+            "recent",
+        )
+        visible = validate_message({
+            "type": "read_pane", "pane_id": "pane-1", "lines": 200,
+            "source": "visible", "request_id": "pane_123",
+        })
+        self.assertEqual(visible["source"], "visible")
+        self.assertEqual(visible["request_id"], "pane_123")
+        with self.assertRaises(ValidationError):
+            validate_message({
+                "type": "read_pane", "pane_id": "pane-1", "source": "raw",
+            })
         with self.assertRaises(ValidationError):
             validate_message({"type": "send_text", "pane_id": "pane-1", "text": "bad\x00text"})
         submitted = validate_message({

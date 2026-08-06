@@ -222,7 +222,7 @@ body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg);
   <div class="term-header">
     <button class="back" onclick="closeTerminal()" aria-label="Back to agent list">‹</button>
     <span class="title" id="termTitle"></span>
-    <button class="refresh-btn" onclick="refreshPane()" aria-label="Refresh pane">↻</button>
+    <button class="refresh-btn" onclick="queuePaneRefresh()" aria-label="Refresh pane">↻</button>
   </div>
   <div class="term-content" id="termContent">Loading…</div>
   <div class="quick-actions" id="quickActions"></div>
@@ -297,6 +297,11 @@ const pendingControls = new Map();
 let connectionState = 'disconnected', lastAgentUpdate = 0, reconnectTimer = null;
 let pushRelayState = 'not-synced';
 let pushQuiet = false, pushQuietPending = false;
+let paneReadInFlight = null, paneRefreshQueued = false, paneHistoryLoaded = false;
+let paneHistoryLoadPending = false;
+const PANE_REFRESH_MS = 1500;
+const PANE_READ_TIMEOUT_MS = 18000;
+const DEFAULT_PANE_LINES = 200;
 
 // Settings — auto-detect relay when served from same origin
 const autoRelayUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
@@ -383,6 +388,7 @@ function connect() {
       failPendingSubmission('Connection lost. Your message was not cleared.');
     }
     failPendingControls('Connection lost before Herdr confirmed the action.');
+    resetPaneRefresh();
     reconnectTimer = setTimeout(connect, 3000);
   };
   socket.onerror = () => { if (ws === socket) setStatus('disconnected'); };
@@ -498,11 +504,18 @@ function handleMessage(msg) {
     timeline.unshift({project: msg.project, agent: msg.agent, status: 'blocked', time: new Date()});
     if (timeline.length > 100) timeline.pop();
     render();
-  } else if (msg.type === 'pane_content' && msg.pane_id === activePane) {
+  } else if (msg.type === 'pane_content') {
+    const isHistoryResponse = paneReadInFlight?.requestId === msg.request_id && paneReadInFlight.source === 'recent';
+    if (!finishPaneRead(msg.request_id) || msg.pane_id !== activePane) return;
     const el = document.getElementById('termContent');
+    const content = msg.content || '(empty)';
+    if (el.textContent === content) {
+      if (isHistoryResponse) requestAnimationFrame(() => { paneHistoryLoadPending = false; });
+      return;
+    }
     const prevHeight = el.scrollHeight;
     const prevScroll = el.scrollTop;
-    el.textContent = msg.content || '(empty)';
+    el.textContent = content;
     if (userScrolledUp) {
       // Keep scroll position relative to bottom (content may have grown at top)
       const growth = el.scrollHeight - prevHeight;
@@ -510,6 +523,7 @@ function handleMessage(msg) {
     } else {
       el.scrollTop = el.scrollHeight;
     }
+    if (isHistoryResponse) requestAnimationFrame(() => { paneHistoryLoadPending = false; });
   } else if (msg.type === 'command_result') {
     handleCommandResult(msg);
   } else if (msg.type === 'push_subscribed') {
@@ -526,6 +540,9 @@ function handleMessage(msg) {
     pushQuietPending = false;
     if (msg.ok) pushQuiet = Boolean(msg.quiet);
     updatePushUI(msg.error || '');
+  } else if (msg.type === 'error' && paneReadInFlight?.requestId === msg.request_id) {
+    if (paneReadInFlight.source === 'recent') paneHistoryLoadPending = false;
+    finishPaneRead(msg.request_id);
   } else if (msg.type === 'error' && pendingSubmission) {
     failPendingSubmission(`Send rejected: ${msg.message || 'relay error'}`);
   } else if (msg.type === 'error' && msg.request_id && pendingControls.has(msg.request_id)) {
@@ -681,7 +698,8 @@ function section(title, color, list) {
 }
 
 function openTerminal(paneId) {
-  activePane = paneId; paneLines = 200; userScrolledUp = false;
+  resetPaneRefresh();
+  activePane = paneId; paneLines = DEFAULT_PANE_LINES; userScrolledUp = false; paneHistoryLoaded = false;
   const a = agents.find(x => x.pane_id===paneId);
   document.getElementById('termTitle').textContent = a?`${a.label||a.project} · ${a.agent}`:paneId;
   document.getElementById('agentListView').style.display = 'none';
@@ -701,11 +719,12 @@ function openTerminal(paneId) {
     ak.innerHTML='';
   }
   refreshPane();
-  refreshInterval = setInterval(refreshPane, 3000);
+  refreshInterval = setInterval(refreshPane, PANE_REFRESH_MS);
 }
 
 function closeTerminal() {
   activePane = null; clearInterval(refreshInterval);
+  resetPaneRefresh();
   if (pendingSubmission) clearTimeout(pendingSubmission.timeout);
   pendingSubmission = null;
   for (const pending of pendingControls.values()) clearTimeout(pending.timeout);
@@ -717,9 +736,56 @@ function closeTerminal() {
   document.getElementById('quickDock').style.display = 'none';
 }
 
-let paneLines = 200;
-function refreshPane() { if(ws&&activePane) ws.send(JSON.stringify({type:'read_pane',pane_id:activePane,lines:paneLines})); }
-function loadMore() { paneLines = Math.min(paneLines + 500, 5000); refreshPane(); }
+let paneLines = DEFAULT_PANE_LINES;
+function resetPaneRefresh() {
+  if (paneReadInFlight) clearTimeout(paneReadInFlight.timeout);
+  paneReadInFlight = null;
+  paneRefreshQueued = false;
+  paneHistoryLoadPending = false;
+}
+function finishPaneRead(requestId) {
+  if (!paneReadInFlight || requestId !== paneReadInFlight.requestId) return false;
+  clearTimeout(paneReadInFlight.timeout);
+  paneReadInFlight = null;
+  const refreshAgain = paneRefreshQueued;
+  paneRefreshQueued = false;
+  if (refreshAgain && activePane) setTimeout(refreshPane, 0);
+  return !refreshAgain;
+}
+function queuePaneRefresh() {
+  if (paneReadInFlight) {
+    paneRefreshQueued = true;
+    return;
+  }
+  refreshPane();
+}
+function refreshPane() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !activePane) return;
+  if (paneReadInFlight) return;
+  const requestId = `pane_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const paneId = activePane;
+  const source = paneHistoryLoaded ? 'recent' : 'visible';
+  const timeout = setTimeout(() => {
+    if (paneReadInFlight?.requestId !== requestId) return;
+    if (paneReadInFlight.source === 'recent') paneHistoryLoadPending = false;
+    paneReadInFlight = null;
+    const refreshAgain = paneRefreshQueued;
+    paneRefreshQueued = false;
+    if (refreshAgain && activePane === paneId) refreshPane();
+  }, PANE_READ_TIMEOUT_MS);
+  paneReadInFlight = {requestId, paneId, source, timeout};
+  ws.send(JSON.stringify({
+    type: 'read_pane', pane_id: paneId, lines: paneLines,
+    source, request_id: requestId,
+  }));
+}
+function loadMore() {
+  if (paneHistoryLoadPending || paneLines >= 5000) return;
+  paneHistoryLoadPending = true;
+  paneHistoryLoaded = true;
+  paneLines = Math.min(paneLines + 500, 5000);
+  queuePaneRefresh();
+}
 function setCommandStatus(message, isError=false) {
   const status = document.getElementById('commandStatus');
   status.textContent = message;
@@ -755,7 +821,7 @@ function handleCommandResult(msg) {
     if (pending.clearInput && input.value === pending.text) input.value = '';
     setCommandStatus('Sent');
     setTimeout(() => setCommandStatus(''), 1500);
-    setTimeout(refreshPane, 300);
+    setTimeout(queuePaneRefresh, 120);
     return;
   }
   if (msg.request_id && pendingControls.has(msg.request_id)) {
@@ -801,7 +867,7 @@ function finishControl(requestId, ok, failureMessage='') {
   if (pending.onSuccess) pending.onSuccess();
   setCommandStatus(`${pending.label} sent`);
   setTimeout(() => setCommandStatus(''), 1500);
-  setTimeout(refreshPane, 300);
+  setTimeout(queuePaneRefresh, 120);
 }
 function failPendingControls(message) {
   const requestIds = [...pendingControls.keys()];

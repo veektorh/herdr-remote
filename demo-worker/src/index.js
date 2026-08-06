@@ -57,7 +57,8 @@ export default {
         if (msg.type === 'read_pane') {
           server.send(JSON.stringify({
             type: 'pane_content', pane_id: msg.pane_id,
-            content: `$ herdr agent session\n\n[demo mode -- read-only preview]\n\nAgent: ${msg.pane_id.split(':')[1]}\nProject: ${agents.find(a => a.pane_id === msg.pane_id)?.project || 'unknown'}\n\n  Compiled successfully\n  Running tests...\n\n  PASS src/index.test.ts\n  PASS src/utils.test.ts\n\nAll tests passed.`
+            content: `$ herdr agent session\n\n[demo mode -- read-only preview]\n\nAgent: ${msg.pane_id.split(':')[1]}\nProject: ${agents.find(a => a.pane_id === msg.pane_id)?.project || 'unknown'}\n\n  Compiled successfully\n  Running tests...\n\n  PASS src/index.test.ts\n  PASS src/utils.test.ts\n\nAll tests passed.`,
+            ...(msg.request_id ? {request_id: msg.request_id} : {})
           }));
         } else if (msg.type === 'respond') {
           const a = agents.find(x => x.pane_id === msg.pane_id);

@@ -6,7 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 class StubHeaders:
@@ -320,6 +320,51 @@ class RelayHttpTests(unittest.TestCase):
             self.assertEqual(socket.sent, [{
                 "type": "command_result", "action": "submit_text", "ok": True,
                 "pane_id": "pane-1", "request_id": request_id,
+            }])
+        finally:
+            self.relay.known_panes.discard("pane-1")
+
+    def test_read_pane_websocket_returns_correlated_visible_snapshot(self):
+        class FakeSocket:
+            remote_address = ("127.0.0.1", 12345)
+            request = Request(headers=[("User-Agent", "test")])
+            herdr_auth = types.SimpleNamespace(allows=lambda scope: scope == "read")
+
+            def __init__(self):
+                self.message = __import__("json").dumps({
+                    "type": "read_pane", "pane_id": "pane-1", "lines": 200,
+                    "source": "visible", "request_id": "pane_123",
+                })
+                self.sent = []
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.message is None:
+                    raise StopAsyncIteration
+                message, self.message = self.message, None
+                return message
+
+            async def send(self, value):
+                self.sent.append(__import__("json").loads(value))
+
+        socket = FakeSocket()
+        self.relay.known_panes.add("pane-1")
+        try:
+            with patch.object(
+                self.relay.asyncio, "to_thread",
+                new=AsyncMock(return_value="current screen"),
+            ) as read:
+                asyncio.run(self.relay.handle_client(socket))
+            read.assert_awaited_once_with(
+                self.relay.run_herdr, "pane", "read", "pane-1", "--lines", "200",
+                "--source", "visible",
+                remote=None,
+            )
+            self.assertEqual(socket.sent, [{
+                "type": "pane_content", "pane_id": "pane-1",
+                "content": "current screen", "request_id": "pane_123",
             }])
         finally:
             self.relay.known_panes.discard("pane-1")
